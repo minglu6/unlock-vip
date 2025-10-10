@@ -1,0 +1,31 @@
+# MySQL 配置文件
+# 生产环境性能优化
+
+[mysqld]
+# 基础配置
+max_connections = 200
+max_connect_errors = 100
+wait_timeout = 600
+interactive_timeout = 600
+
+# InnoDB 配置
+innodb_buffer_pool_size = 1G
+innodb_log_file_size = 256M
+innodb_flush_log_at_trx_commit = 2
+innodb_flush_method = O_DIRECT
+
+# 查询缓存 (MySQL 8.0 已移除，注释掉)
+# query_cache_type = 0
+# query_cache_size = 0
+
+# 日志配置
+slow_query_log = 1
+# 使用容器内的数据目录，避免权限问题
+slow_query_log_file = /var/lib/mysql/slow.log
+long_query_time = 2
+# 错误日志
+log_error = /var/lib/mysql/error.log
+
+# 字符集
+character_set_server = utf8mb4
+collation_server = utf8mb4_unicode_ci

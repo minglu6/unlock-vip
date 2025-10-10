@@ -1,0 +1,2 @@
+# 此文件用于保持 downloads 目录被 Git 跟踪
+# 下载的 HTML 文件会被 .gitignore 忽略
