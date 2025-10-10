@@ -144,6 +144,7 @@ services:
       redis:
         condition: service_healthy
     restart: always
+    # 并发维持为1，避免内存不足时浏览器启动失败
     command: celery -A app.core.celery_app worker --loglevel=info --concurrency=1 --pool=solo --uid=nobody --gid=nogroup
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.core.celery_app inspect ping -d celery@$$HOSTNAME"]
@@ -155,10 +156,12 @@ services:
       resources:
         limits:
           cpus: '0.3'
-          memory: 256M
+          # 将 Celery 内存上限提升到 1GB，以满足 Playwright/Chromium 登录峰值
+          memory: 1024M
         reservations:
           cpus: '0.1'
-          memory: 128M
+          # 预留 512MB，降低因瞬时峰值导致的调度失败/卡死
+          memory: 512M
     networks:
       - unlock-vip-network
 

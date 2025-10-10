@@ -56,18 +56,23 @@ class AuthService:
         service_type = settings.CAPTCHA_SERVICE
 
         if service_type == 'chaojiying':
-            return get_captcha_service(
+            svc = get_captcha_service(
                 'chaojiying',
                 username=settings.CHAOJIYING_USERNAME,
                 password=settings.CHAOJIYING_PASSWORD,
                 soft_id=settings.CHAOJIYING_SOFT_ID,
             )
+            print("[Captcha] 使用 ChaoJiYing 服务")
+            return svc
         if service_type == '2captcha':
-            return get_captcha_service(
+            svc = get_captcha_service(
                 '2captcha',
                 api_key=settings.TWOCAPTCHA_API_KEY,
             )
+            print("[Captcha] 使用 2Captcha 服务")
+            return svc
         if service_type == 'mock':
+            print("[Captcha] 使用 Mock 验证码服务（仅调试）")
             return get_captcha_service('mock')
 
         print(f"[WARN] 未知的验证码服务类型: {service_type}，将使用手动模式")
@@ -120,7 +125,39 @@ class AuthService:
 
                 self.browser_context = context
                 self.page = context.pages[0] if context.pages else context.new_page()
-                self.page.set_default_timeout(10000)
+                # 放宽默认等待与导航超时，适配云服务器网络波动
+                try:
+                    self.page.set_default_timeout(30000)
+                    self.page.set_default_navigation_timeout(30000)
+                except Exception:
+                    pass
+
+                # 轻量化资源加载：可选拦截 字体/媒体（不拦图片，避免影响验证码）
+                try:
+                    block_media_fonts = os.getenv("PLAYWRIGHT_BLOCK_MEDIA_FONTS", "1") == "1"
+                    if block_media_fonts:
+                        print("[Net] 资源拦截启用：拦截 font/media，放行 image/js/css")
+                    else:
+                        print("[Net] 资源拦截已禁用：放行所有资源")
+
+                    def _route_filter(route, request):
+                        try:
+                            rtype_attr = getattr(request, 'resource_type', None)
+                            rtype = rtype_attr() if callable(rtype_attr) else rtype_attr
+                        except Exception:
+                            rtype = None
+                        # 若禁用拦截，则直接放行
+                        if not block_media_fonts:
+                            return route.continue_()
+                        # 不拦图片，避免影响验证码加载；仅拦字体/媒体
+                        if rtype in ("media", "font"):
+                            route.abort()
+                        else:
+                            route.continue_()
+
+                    self.page.route("**/*", _route_filter)
+                except Exception:
+                    pass
 
                 print(f"[OK] Chromium 启动成功 (尝试 {attempt}/{max_retries})")
                 return
@@ -152,7 +189,16 @@ class AuthService:
             page = self.page
 
             print("[Net] 正在访问CSDN登录页面...")
-            page.goto('https://passport.csdn.net/login?code=applets', wait_until="domcontentloaded")
+            login_url = 'https://passport.csdn.net/login?code=applets'
+            try:
+                page.goto(login_url, wait_until="domcontentloaded", timeout=45000)
+            except PlaywrightTimeoutError:
+                print("[WARN] 首次打开登录页超时，降级为 commit 策略并延长超时...")
+                try:
+                    page.goto(login_url, wait_until="commit", timeout=60000)
+                except PlaywrightTimeoutError:
+                    print("[ERROR] 登录页仍然超时，请检查容器网络/DNS/出口策略")
+                    return False
             page.wait_for_timeout(3000)
 
             print("[Search] 尝试切换到验证码登录模式...")
@@ -258,9 +304,7 @@ class AuthService:
             except PlaywrightError:
                 page.evaluate("(el) => el.click()", login_button)
 
-            print("[Wait] 等待登录结果...")
-            page.wait_for_timeout(3000)
-
+            print("[Wait] 观察登录结果（最长20秒，轮询验证码/跳转）...")
             if self.debug:
                 try:
                     page.screenshot(path="debug_after_login_click.png")
@@ -268,40 +312,51 @@ class AuthService:
                 except PlaywrightError:
                     pass
 
-            try:
-                # 检测多种验证码标识
-                captcha_selectors = [
-                    "xpath=//*[contains(text(), '安全验证')]",
-                    "xpath=//*[contains(text(), '请完成安全验证')]",
-                    ".caption__title",  # CSDN验证码标题
-                    "canvas",  # CSDN使用canvas
-                    ".verify-img-panel"  # 验证码面板
-                ]
+            # 轮询等待验证码或登录跳转，提高低网速下的稳定性
+            captcha_selectors = [
+                "xpath=//*[contains(text(), '安全验证')]",
+                "xpath=//*[contains(text(), '请完成安全验证')]",
+                ".caption__title",
+                "#click_v2",
+                ".verify-img-panel",
+                "canvas",
+                "img.geetest_item_img",
+            ]
 
-                captcha_visible = False
-                for selector in captcha_selectors:
-                    locator = page.locator(selector)
-                    if locator.count() > 0:
-                        elem = locator.first
-                        if elem.is_visible():
-                            captcha_visible = True
-                            print(f"[Captcha] 检测到验证码元素: {selector}")
-                            break
+            captcha_triggered = False
+            for i in range(20):
+                try:
+                    # 成功登录：URL 跳出 passport/login 即认为成功
+                    if 'login' not in page.url and 'passport' not in page.url:
+                        break
 
-                if captcha_visible:
-                    print("[Captcha] 检测到验证码！")
-                    if self.use_captcha_service and self.captcha_service:
-                        success = self._handle_captcha_auto()
-                        if success:
-                            print("[OK] 验证码自动识别完成！")
+                    # 检测验证码出现
+                    for selector in captcha_selectors:
+                        locator = page.locator(selector)
+                        if locator.count() > 0:
+                            elem = locator.first
+                            if elem.is_visible():
+                                print(f"[Captcha] 检测到验证码元素: {selector}")
+                                captcha_triggered = True
+                                break
+                    if captcha_triggered:
+                        print("[Captcha] 检测到验证码！")
+                        if self.use_captcha_service and self.captcha_service:
+                            print("[Captcha] 调用自动识别服务...")
+                            success = self._handle_captcha_auto()
+                            if success:
+                                print("[OK] 验证码自动识别完成！")
+                            else:
+                                print("[ERROR] 自动识别失败，切换到手动模式")
+                                self._handle_captcha_manual()
                         else:
-                            print("[ERROR] 自动识别失败，切换到手动模式")
+                            print("[Captcha] 未启用验证码服务，进入手动模式")
                             self._handle_captcha_manual()
-                    else:
-                        self._handle_captcha_manual()
-                    page.wait_for_timeout(2000)
-            except PlaywrightError as exc:
-                print(f"[WARN] 验证码处理异常: {str(exc)[:120]}")
+                        page.wait_for_timeout(2000)
+                        break
+                except PlaywrightError:
+                    pass
+                page.wait_for_timeout(1000)
 
             current_url = page.url
             print(f"[Location] 当前页面URL: {current_url}")
@@ -507,6 +562,8 @@ class AuthService:
     def _handle_captcha_auto(self) -> bool:
         """自动识别并完成验证码"""
         try:
+            import tempfile
+            import uuid
             if not self.page:
                 print("[ERROR] 浏览器页面不可用，无法自动识别验证码")
                 return False
@@ -544,7 +601,33 @@ class AuthService:
                 return False
 
             # 保存验证码图片（截取完整的验证码容器，包含图片和文字提示）
-            captcha_image_path = "captcha_temp.png"
+            # 解决 Permission denied: 在只读工作目录下改用可写的临时目录
+            candidates = []
+            # 1) 用户数据目录下的 tmp（一定可写，且会随会话清理）
+            if self.user_data_dir and os.path.isdir(self.user_data_dir):
+                candidates.append(os.path.join(self.user_data_dir, "tmp"))
+            # 2) 系统临时目录
+            candidates.append(tempfile.gettempdir())
+
+            captcha_image_path = None
+            filename = f"captcha_{uuid.uuid4().hex[:8]}.png"
+            for base in candidates:
+                try:
+                    os.makedirs(base, exist_ok=True)
+                    test_path = os.path.join(base, filename)
+                    # 先尝试创建空文件以验证写权限
+                    with open(test_path, 'wb') as _fh:
+                        pass
+                    os.remove(test_path)
+                    captcha_image_path = os.path.join(base, filename)
+                    break
+                except Exception:
+                    continue
+
+            if not captcha_image_path:
+                print("[ERROR] 无可写临时目录用于保存验证码截图")
+                return False
+
             captcha_element.screenshot(path=captcha_image_path)
             print(f"[Screenshot] 已保存验证码图片到: {captcha_image_path}")
 
