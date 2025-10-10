@@ -23,37 +23,48 @@ class ArticleService:
     def ensure_login(self):
         """确保已登录"""
         if self.is_logged_in:
-            return
+            # 即使标记为已登录，也要定期验证
+            if self.auth_service.verify_login():
+                return
+            else:
+                logger.info("[Refresh] 检测到登录状态失效，需要重新登录")
+                self.is_logged_in = False
+
+        logger.info("[Captcha] 开始登录流程...")
 
         # 尝试加载cookies
         cookies_loaded = self.auth_service.load_cookies()
 
         if not cookies_loaded:
-            # 没有cookies,执行登录
-            username = settings.CSDN_USERNAME
-            password = settings.CSDN_PASSWORD
-
-            if not username or not password:
-                raise Exception("CSDN登录凭证未配置,请在.env文件中设置CSDN_USERNAME和CSDN_PASSWORD")
-
-            login_success = self.auth_service.login(username, password)
-            if not login_success:
-                raise Exception("CSDN登录失败,请检查用户名和密码")
-
-        # 验证登录状态
-        if not self.auth_service.verify_login():
-            # cookies失效，重新登录
-            username = settings.CSDN_USERNAME
-            password = settings.CSDN_PASSWORD
-
-            if not username or not password:
-                raise Exception("CSDN登录凭证未配置")
-
-            login_success = self.auth_service.login(username, password)
-            if not login_success:
-                raise Exception("CSDN登录失败")
+            logger.info("[Note] 没有有效的cookies，执行登录")
+            self._perform_login()
+        else:
+            # 验证加载的cookies是否有效
+            logger.info("[Search] 验证cookies有效性...")
+            if not self.auth_service.verify_login():
+                logger.warning("[WARN] cookies已失效，重新登录")
+                self._perform_login()
+            else:
+                logger.info("[OK] cookies验证通过")
 
         self.is_logged_in = True
+        logger.info("[OK] 登录流程完成")
+
+    def _perform_login(self):
+        """执行登录操作"""
+        username = settings.CSDN_USERNAME
+        password = settings.CSDN_PASSWORD
+
+        if not username or not password:
+            raise Exception("CSDN登录凭证未配置,请在.env文件中设置CSDN_USERNAME和CSDN_PASSWORD")
+
+        logger.info(f"[Auth] 使用账号 {username} 登录...")
+        login_success = self.auth_service.login(username, password)
+
+        if not login_success:
+            raise Exception("CSDN登录失败,请检查用户名和密码或网络连接")
+
+        logger.info("[OK] 登录成功")
 
     def _force_relogin(self) -> bool:
         """
@@ -62,47 +73,23 @@ class ArticleService:
         Returns:
             bool: 重新登录是否成功
         """
-        logger.info("🔄 开始强制重新登录流程...")
+        logger.info("[Refresh] 开始强制重新登录流程...")
 
         try:
-            # 清除当前的登录状态
+            # 清除当前的登录状态和cookies
             self.is_logged_in = False
-
-            # 清除现有的cookies
             if self.auth_service:
                 self.auth_service.cookies.clear()
 
-            # 重新执行完整的登录流程
-            username = settings.CSDN_USERNAME
-            password = settings.CSDN_PASSWORD
+            # 使用统一的登录方法
+            self._perform_login()
+            self.is_logged_in = True
 
-            if not username or not password:
-                logger.error("❌ CSDN登录凭证未配置，无法重新登录")
-                return False
-
-            logger.info(f"📝 使用用户名 {username} 重新登录...")
-
-            # 执行登录
-            login_success = self.auth_service.login(username, password)
-
-            if login_success:
-                logger.info("✅ 重新登录成功")
-
-                # 验证新的登录状态
-                if self.auth_service.verify_login():
-                    logger.info("✅ 新的登录状态验证通过")
-                    self.is_logged_in = True
-                    return True
-                else:
-                    logger.warning("⚠️  新的登录状态验证失败，但登录过程成功")
-                    self.is_logged_in = True
-                    return True
-            else:
-                logger.error("❌ 重新登录失败")
-                return False
+            logger.info("[OK] 强制重新登录成功")
+            return True
 
         except Exception as e:
-            logger.error(f"❌ 重新登录过程出错: {str(e)}")
+            logger.error(f"[ERROR] 强制重新登录失败: {str(e)}")
             import traceback
             logger.debug(traceback.format_exc())
             return False
@@ -147,9 +134,9 @@ class ArticleService:
             bool: 是否解锁成功
         """
         logger.info(f"\n{'='*60}")
-        logger.info(f"🔓 开始解锁VIP文章")
+        logger.info(f"[Unlock] 开始解锁VIP文章")
         logger.info(f"{'='*60}")
-        logger.info(f"📄 文章ID: {article_id}")
+        logger.info(f"[Article] 文章ID: {article_id}")
 
         # 直接加载cookies文件，确保使用最新的有效cookies
         try:
@@ -182,7 +169,7 @@ class ArticleService:
             has_user_info = any(cookie.name == 'UserInfo' for cookie in session.cookies)
             logger.info(f"   UserToken: {has_user_token}, UserInfo: {has_user_info}")
 
-            # 🔑 发送解锁请求
+            # [Auth] 发送解锁请求
             unlock_url = "https://blog.csdn.net/phoenix/web/v1/vip-article-read"
             payload = {"articleId": int(article_id)}
             
@@ -197,19 +184,19 @@ class ArticleService:
             
             try:
                 result = response.json()
-                logger.info(f"📨 API响应: {json.dumps(result, ensure_ascii=False)}")
+                logger.info(f"[Response] API响应: {json.dumps(result, ensure_ascii=False)}")
                 
                 if result.get('code') == 200:
-                    logger.info(f"✅ VIP文章解锁成功！")
+                    logger.info(f"[OK] VIP文章解锁成功！")
                     logger.info(f"{'='*60}\n")
                     return True
                 elif result.get('code') == 400:
                     # 400 通常表示文章不是VIP文章，或已解锁
-                    logger.info(f"ℹ️  文章可能不是VIP文章或已解锁")
+                    logger.info(f"[INFO]  文章可能不是VIP文章或已解锁")
                     logger.info(f"{'='*60}\n")
                     return True
                 else:
-                    logger.warning(f"⚠️  解锁失败: code={result.get('code')}, message={result.get('message')}")
+                    logger.warning(f"[WARN]  解锁失败: code={result.get('code')}, message={result.get('message')}")
                     logger.info(f"{'='*60}\n")
                     return False
                     
@@ -232,7 +219,7 @@ class ArticleService:
         """
         解锁VIP文章的回退方法 - 使用auth_service的session
         """
-        logger.info(f"🔄 使用回退方法解锁VIP文章")
+        logger.info(f"[Refresh] 使用回退方法解锁VIP文章")
 
         self.ensure_login()
         session = self.auth_service.get_session()
@@ -315,9 +302,9 @@ class ArticleService:
             bool: 是否解锁成功
         """
         logger.info(f"\n{'='*60}")
-        logger.info(f"🔓 开始解锁CSDN文库VIP文档")
+        logger.info(f"[Unlock] 开始解锁CSDN文库VIP文档")
         logger.info(f"{'='*60}")
-        logger.info(f"📄 文档ID: {wenku_id}")
+        logger.info(f"[Doc] 文档ID: {wenku_id}")
 
         try:
             # CSDN文库的解锁接口可能与博客不同，这里尝试几种可能的方式
@@ -353,18 +340,18 @@ class ArticleService:
                     if response.status_code == 200:
                         try:
                             result = response.json()
-                            logger.info(f"📨 API响应: {json.dumps(result, ensure_ascii=False)}")
+                            logger.info(f"[Response] API响应: {json.dumps(result, ensure_ascii=False)}")
 
                             if result.get('code') == 200:
-                                logger.info(f"✅ CSDN文库VIP文档解锁成功！")
+                                logger.info(f"[OK] CSDN文库VIP文档解锁成功！")
                                 logger.info(f"{'='*60}\n")
                                 return True
                             elif result.get('code') == 400:
-                                logger.info(f"ℹ️  文档可能不是VIP文档或已解锁")
+                                logger.info(f"[INFO]  文档可能不是VIP文档或已解锁")
                                 logger.info(f"{'='*60}\n")
                                 return True
                             else:
-                                logger.warning(f"⚠️  解锁失败: code={result.get('code')}, message={result.get('message')}")
+                                logger.warning(f"[WARN]  解锁失败: code={result.get('code')}, message={result.get('message')}")
 
                         except json.JSONDecodeError:
                             logger.warning(f"解锁API返回非JSON响应: {response.text[:100]}")
@@ -500,22 +487,22 @@ class ArticleService:
             # 如果检测到锁定标识，可能意味着cookie已失效
             is_locked = self.is_vip_article_locked(full_html, url)
             if is_locked:
-                logger.warning("⚠️  检测到VIP锁定标识，尝试执行解锁流程")
+                logger.warning("[WARN]  检测到VIP锁定标识，尝试执行解锁流程")
 
                 if article_id:
-                    logger.info("� 调用VIP解锁接口...")
+                    logger.info("[Key] 调用VIP解锁接口...")
                     unlock_success = self.unlock_vip_article(article_id)
                     if unlock_success:
-                        logger.info("✅ VIP解锁成功，刷新文章内容")
+                        logger.info("[OK] VIP解锁成功，刷新文章内容")
                         session = build_session()
                         full_html = fetch_html(session)
                         is_locked = self.is_vip_article_locked(full_html, url)
 
                 if is_locked and not unlock_success:
-                    logger.info("🔄 尝试重新登录获取有效cookies...")
+                    logger.info("[Refresh] 尝试重新登录获取有效cookies...")
                     try:
                         if self._force_relogin():
-                            logger.info("✅ 重新登录成功，刷新会话")
+                            logger.info("[OK] 重新登录成功，刷新会话")
                             session = build_session()
 
                             if article_id:
@@ -525,15 +512,15 @@ class ArticleService:
                             is_locked = self.is_vip_article_locked(full_html, url)
 
                             if is_locked:
-                                logger.error("❌ 重新登录后仍检测到VIP锁定，可能账号无权限或页面结构变化")
+                                logger.error("[ERROR] 重新登录后仍检测到VIP锁定，可能账号无权限或页面结构变化")
                             else:
-                                logger.info("✅ 重新登录后VIP锁定解除")
+                                logger.info("[OK] 重新登录后VIP锁定解除")
                         else:
-                            logger.error("❌ 重新登录失败，继续使用当前cookies")
+                            logger.error("[ERROR] 重新登录失败，继续使用当前cookies")
                     except Exception as login_error:
-                        logger.error(f"❌ 重新登录过程出错: {str(login_error)}")
+                        logger.error(f"[ERROR] 重新登录过程出错: {str(login_error)}")
             else:
-                logger.info("✅ 未检测到VIP锁定，正常处理文档")
+                logger.info("[OK] 未检测到VIP锁定，正常处理文档")
 
             # 解析HTML
             soup = BeautifulSoup(full_html, 'html.parser')
@@ -581,7 +568,7 @@ class ArticleService:
                 content_element = soup.select_one(selector)
                 if content_element:
                     article_content = str(content_element)
-                    logger.info(f"✅ 找到内容区域: {selector}")
+                    logger.info(f"[OK] 找到内容区域: {selector}")
 
                     # 针对wenku的特殊处理：移除可能的遮盖元素
                     if 'wenku.csdn.net' in url:
@@ -616,19 +603,19 @@ class ArticleService:
             }
 
         except requests.exceptions.Timeout:
-            logger.error("❌ 请求超时")
+            logger.error("[ERROR] 请求超时")
             raise Exception("下载文章失败: 请求超时，请检查网络连接")
         except requests.exceptions.ConnectionError:
-            logger.error("❌ 连接失败")
+            logger.error("[ERROR] 连接失败")
             raise Exception("下载文章失败: 无法连接到服务器")
         except requests.exceptions.HTTPError as e:
-            logger.error(f"❌ HTTP错误: {e.response.status_code}")
+            logger.error(f"[ERROR] HTTP错误: {e.response.status_code}")
             raise Exception(f"下载文章失败: HTTP {e.response.status_code}")
         except requests.exceptions.RequestException as e:
-            logger.error(f"❌ 网络请求错误: {str(e)}")
+            logger.error(f"[ERROR] 网络请求错误: {str(e)}")
             raise Exception(f"下载文章失败: {str(e)}")
         except Exception as e:
-            logger.error(f"❌ 解析文章失败: {str(e)}")
+            logger.error(f"[ERROR] 解析文章失败: {str(e)}")
             import traceback
             logger.debug(traceback.format_exc())
             raise Exception(f"解析文章失败: {str(e)}")

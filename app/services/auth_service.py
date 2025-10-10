@@ -46,9 +46,9 @@ class AuthService:
         if self.user_data_dir and os.path.exists(self.user_data_dir):
             try:
                 shutil.rmtree(self.user_data_dir)
-                print(f"🧹 已清理旧的 user-data-dir: {self.user_data_dir}")
+                print(f"[Clean] 已清理旧的 user-data-dir: {self.user_data_dir}")
             except Exception as exc:
-                print(f"⚠️ 清理 user-data-dir 失败: {exc}")
+                print(f"[WARN] 清理 user-data-dir 失败: {exc}")
         self.user_data_dir = None
 
     def _init_captcha_service(self):
@@ -70,7 +70,7 @@ class AuthService:
         if service_type == 'mock':
             return get_captcha_service('mock')
 
-        print(f"⚠️ 未知的验证码服务类型: {service_type}，将使用手动模式")
+        print(f"[WARN] 未知的验证码服务类型: {service_type}，将使用手动模式")
         return None
 
     def _init_browser(self):
@@ -83,7 +83,8 @@ class AuthService:
         max_retries = 3
         for attempt in range(1, max_retries + 1):
             self._cleanup_user_data_dir()
-            self.user_data_dir = tempfile.mkdtemp(prefix="pw_user_data_", dir="/tmp")
+            # 使用系统默认临时目录，跨平台兼容（Windows/Linux/Mac）
+            self.user_data_dir = tempfile.mkdtemp(prefix="pw_user_data_")
 
             try:
                 self.playwright = sync_playwright().start()
@@ -121,10 +122,10 @@ class AuthService:
                 self.page = context.pages[0] if context.pages else context.new_page()
                 self.page.set_default_timeout(10000)
 
-                print(f"✅ Chromium 启动成功 (尝试 {attempt}/{max_retries})")
+                print(f"[OK] Chromium 启动成功 (尝试 {attempt}/{max_retries})")
                 return
             except PlaywrightError as exc:
-                print(f"❌ Chromium 启动失败 (尝试 {attempt}/{max_retries}): {str(exc)[:120]}")
+                print(f"[ERROR] Chromium 启动失败 (尝试 {attempt}/{max_retries}): {str(exc)[:120]}")
                 self.close()
                 if attempt == max_retries:
                     raise
@@ -145,16 +146,16 @@ class AuthService:
             self._init_browser()
 
             if not self.page:
-                print("❌ 浏览器页面初始化失败")
+                print("[ERROR] 浏览器页面初始化失败")
                 return False
 
             page = self.page
 
-            print("📡 正在访问CSDN登录页面...")
+            print("[Net] 正在访问CSDN登录页面...")
             page.goto('https://passport.csdn.net/login?code=applets', wait_until="domcontentloaded")
             page.wait_for_timeout(3000)
 
-            print("🔍 尝试切换到验证码登录模式...")
+            print("[Search] 尝试切换到验证码登录模式...")
             try:
                 verification_login_tab = page.locator("text=验证码登录")
                 if verification_login_tab.count() > 0:
@@ -163,7 +164,7 @@ class AuthService:
             except PlaywrightError as exc:
                 print(f"  未找到验证码登录标签: {str(exc)[:80]}")
 
-            print("🔍 查找其他登录方式...")
+            print("[Search] 查找其他登录方式...")
             try:
                 other_login_elements = page.locator("text=其他登录方式")
                 if other_login_elements.count() > 0:
@@ -173,111 +174,77 @@ class AuthService:
                     if self.debug:
                         try:
                             page.screenshot(path="debug_after_other_login.png")
-                            print("📸 已保存截图: debug_after_other_login.png")
+                            print("[Screenshot] 已保存截图: debug_after_other_login.png")
                         except PlaywrightError:
                             pass
 
-                    print("🔒 查找密码登录方式（login-third-passwd）...")
+                    print("[Lock] 查找密码登录方式（login-third-passwd）...")
                     passwd_login_span = page.locator("span.login-third-passwd")
                     if passwd_login_span.count() > 0:
                         page.evaluate("(el) => el.click()", passwd_login_span.first.element_handle())
-                        print("✅ 已点击密码登录图标")
+                        print("[OK] 已点击密码登录图标")
                         page.wait_for_timeout(2500)
 
                         if self.debug:
                             try:
                                 page.screenshot(path="debug_after_passwd_click.png")
-                                print("📸 已保存截图: debug_after_passwd_click.png")
+                                print("[Screenshot] 已保存截图: debug_after_passwd_click.png")
                             except PlaywrightError:
                                 pass
                     else:
-                        print("  ⚠️ 未找到密码登录元素，尝试继续...")
+                        print("  [WARN] 未找到密码登录元素，尝试继续...")
             except PlaywrightError as exc:
-                print(f"⚠️ 未找到或点击其他登录方式失败: {str(exc)[:80]}")
+                print(f"[WARN] 未找到或点击其他登录方式失败: {str(exc)[:80]}")
 
-            print("🔍 查找用户名输入框...")
+            print("[Search] 查找用户名输入框...")
             try:
                 username_input = page.wait_for_selector("input.base-input-text[autocomplete='username']", timeout=10000)
-                print("✅ 找到用户名输入框")
+                print("[OK] 找到用户名输入框")
             except PlaywrightTimeoutError:
-                print("❌ 未找到用户名输入框")
+                print("[ERROR] 未找到用户名输入框")
                 return False
 
-            print("🔍 查找密码输入框...")
+            print("[Search] 查找密码输入框...")
             try:
                 password_input = page.wait_for_selector("input.base-input-text[autocomplete='current-password']", timeout=10000)
-                print("✅ 找到密码输入框")
+                print("[OK] 找到密码输入框")
             except PlaywrightTimeoutError:
-                print("❌ 未找到密码输入框")
+                print("[ERROR] 未找到密码输入框")
                 return False
 
-            print("⌨️ 输入用户名和密码...")
-            page.evaluate(
-                """
-                (el) => {
-                    el.value = '';
-                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-                """,
-                username_input,
-            )
-            page.evaluate(
-                """
-                (el, value) => {
-                    el.value = value;
-                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-                """,
-                username_input,
-                username,
-            )
+            print("[Input] 输入用户名和密码...")
+            # 清空并输入用户名
+            username_input.click()
+            username_input.fill("")  # 清空
+            username_input.fill(username)  # 输入
             print(f"  已输入用户名: {username}")
             page.wait_for_timeout(800)
 
-            page.evaluate(
-                """
-                (el) => {
-                    el.value = '';
-                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-                """,
-                password_input,
-            )
-            page.evaluate(
-                """
-                (el, value) => {
-                    el.value = value;
-                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-                """,
-                password_input,
-                password,
-            )
+            # 清空并输入密码
+            password_input.click()
+            password_input.fill("")  # 清空
+            password_input.fill(password)  # 输入
             print(f"  已输入密码: {'*' * len(password)}")
             page.wait_for_timeout(800)
 
             if self.debug:
                 try:
                     page.screenshot(path="debug_after_input.png")
-                    print("📸 已保存截图: debug_after_input.png")
+                    print("[Screenshot] 已保存截图: debug_after_input.png")
                 except PlaywrightError:
                     pass
 
-            print("🔍 查找登录按钮...")
+            print("[Search] 查找登录按钮...")
             try:
                 login_button = page.wait_for_selector("button.base-button", timeout=10000)
             except PlaywrightTimeoutError:
-                print("❌ 未找到登录按钮")
+                print("[ERROR] 未找到登录按钮")
                 return False
 
-            print("✅ 找到登录按钮")
+            print("[OK] 找到登录按钮")
             is_disabled = login_button.get_attribute("disabled")
             if is_disabled:
-                print("⚠️ 登录按钮当前被禁用，等待启用...")
+                print("[WARN] 登录按钮当前被禁用，等待启用...")
                 page.wait_for_timeout(2000)
                 is_disabled = login_button.get_attribute("disabled")
                 if is_disabled:
@@ -285,48 +252,59 @@ class AuthService:
                     page.evaluate("(el) => el.removeAttribute('disabled')", login_button)
                     page.wait_for_timeout(500)
 
-            print("🖱️ 点击登录按钮...")
+            print("[Click] 点击登录按钮...")
             try:
                 login_button.click()
             except PlaywrightError:
                 page.evaluate("(el) => el.click()", login_button)
 
-            print("⏳ 等待登录结果...")
+            print("[Wait] 等待登录结果...")
             page.wait_for_timeout(3000)
 
             if self.debug:
                 try:
                     page.screenshot(path="debug_after_login_click.png")
-                    print("📸 已保存截图: debug_after_login_click.png")
+                    print("[Screenshot] 已保存截图: debug_after_login_click.png")
                 except PlaywrightError:
                     pass
 
             try:
-                captcha_locator = page.locator("xpath=//*[contains(text(), '安全验证') or contains(text(), '验证')]")
+                # 检测多种验证码标识
+                captcha_selectors = [
+                    "xpath=//*[contains(text(), '安全验证')]",
+                    "xpath=//*[contains(text(), '请完成安全验证')]",
+                    ".caption__title",  # CSDN验证码标题
+                    "canvas",  # CSDN使用canvas
+                    ".verify-img-panel"  # 验证码面板
+                ]
+
                 captcha_visible = False
-                for idx in range(captcha_locator.count()):
-                    elem = captcha_locator.nth(idx)
-                    if elem.is_visible():
-                        captcha_visible = True
-                        break
+                for selector in captcha_selectors:
+                    locator = page.locator(selector)
+                    if locator.count() > 0:
+                        elem = locator.first
+                        if elem.is_visible():
+                            captcha_visible = True
+                            print(f"[Captcha] 检测到验证码元素: {selector}")
+                            break
 
                 if captcha_visible:
-                    print("🔐 检测到验证码！")
+                    print("[Captcha] 检测到验证码！")
                     if self.use_captcha_service and self.captcha_service:
                         success = self._handle_captcha_auto()
                         if success:
-                            print("✅ 验证码自动识别完成！")
+                            print("[OK] 验证码自动识别完成！")
                         else:
-                            print("❌ 自动识别失败，切换到手动模式")
+                            print("[ERROR] 自动识别失败，切换到手动模式")
                             self._handle_captcha_manual()
                     else:
                         self._handle_captcha_manual()
                     page.wait_for_timeout(2000)
             except PlaywrightError as exc:
-                print(f"⚠️ 验证码处理异常: {str(exc)[:120]}")
+                print(f"[WARN] 验证码处理异常: {str(exc)[:120]}")
 
             current_url = page.url
-            print(f"📍 当前页面URL: {current_url}")
+            print(f"[Location] 当前页面URL: {current_url}")
 
             try:
                 error_messages = page.locator("xpath=//*[contains(@class, 'error') or contains(@class, 'tip')]")
@@ -335,24 +313,24 @@ class AuthService:
                     if elem.is_visible():
                         text = elem.inner_text().strip()
                         if text and '终于等到你' not in text:
-                            print(f"⚠️ 页面提示: {text}")
+                            print(f"[WARN] 页面提示: {text}")
             except PlaywrightError:
                 pass
 
             if 'login' not in current_url and 'passport' not in current_url:
-                print("✅ 登录成功！")
+                print("[OK] 登录成功！")
                 if self.browser_context:
                     context_cookies = self.browser_context.cookies()
                     self.cookies = {item['name']: item['value'] for item in context_cookies}
-                    print(f"📝 获取到 {len(self.cookies)} 个cookie")
+                    print(f"[Note] 获取到 {len(self.cookies)} 个cookie")
                     self._save_cookies()
                 return True
 
-            print("❌ 登录失败，仍在登录页面")
+            print("[ERROR] 登录失败，仍在登录页面")
             return False
 
         except Exception as exc:
-            print(f"❌ 登录异常: {str(exc)}")
+            print(f"[ERROR] 登录异常: {str(exc)}")
             import traceback
             traceback.print_exc()
             return False
@@ -367,17 +345,46 @@ class AuthService:
             bool: 是否成功加载cookies
         """
         if not os.path.exists(self.cookies_file):
+            print(f"[WARN] cookies文件不存在: {self.cookies_file}")
             return False
 
         try:
             with open(self.cookies_file, 'r', encoding='utf-8') as f:
-                self.cookies = json.load(f)
+                loaded_cookies = json.load(f)
 
-            print(f"✅ 成功加载cookies ({len(self.cookies)}个)")
+            # 检查cookies是否为空
+            if not loaded_cookies:
+                print(f"[WARN] cookies文件为空，需要重新登录")
+                return False
+
+            # 检查cookies格式并转换
+            if isinstance(loaded_cookies, list):
+                # Playwright格式: [{"name": "xxx", "value": "yyy"}]
+                self.cookies = {item['name']: item['value'] for item in loaded_cookies}
+                print(f"[OK] 成功加载cookies (Playwright格式, {len(self.cookies)}个)")
+            elif isinstance(loaded_cookies, dict):
+                # 字典格式: {"name": "value"}
+                self.cookies = loaded_cookies
+                print(f"[OK] 成功加载cookies (字典格式, {len(self.cookies)}个)")
+            else:
+                print(f"[ERROR] cookies格式不正确: {type(loaded_cookies)}")
+                return False
+
+            # 检查关键cookies是否存在
+            required_cookies = ['UserToken', 'UserInfo', 'UserName']
+            missing_cookies = [cookie for cookie in required_cookies if cookie not in self.cookies]
+
+            if missing_cookies:
+                print(f"[WARN] 缺少关键cookies: {missing_cookies}，需要重新登录")
+                return False
+
             return True
 
+        except json.JSONDecodeError as e:
+            print(f"[ERROR] cookies文件JSON格式错误: {str(e)}")
+            return False
         except Exception as e:
-            print(f"❌ 加载cookies失败: {str(e)}")
+            print(f"[ERROR] 加载cookies失败: {str(e)}")
             return False
 
     def _save_cookies(self):
@@ -385,9 +392,9 @@ class AuthService:
         try:
             with open(self.cookies_file, 'w', encoding='utf-8') as f:
                 json.dump(self.cookies, f, indent=2, ensure_ascii=False)
-            print(f"✅ Cookies已保存到 {self.cookies_file}")
+            print(f"[OK] Cookies已保存到 {self.cookies_file}")
         except Exception as e:
-            print(f"❌ 保存cookies失败: {str(e)}")
+            print(f"[ERROR] 保存cookies失败: {str(e)}")
 
     def get_session(self):
         """获取已认证的session对象（使用requests）"""
@@ -427,28 +434,45 @@ class AuthService:
         Returns:
             bool: 登录状态是否有效
         """
+        # 首先检查关键cookies是否存在
+        if not self.is_logged_in():
+            print("[ERROR] 缺少关键cookies，登录状态无效")
+            return False
+
         try:
             # 使用requests验证登录状态
             session = self.get_session()
             test_url = "https://www.csdn.net/"
+
+            print("[Search] 正在验证登录状态...")
             response = session.get(test_url, timeout=10)
 
-            # 如果能正常访问且没有跳转到登录页，说明登录有效
-            if response.status_code == 200 and 'passport.csdn.net/login' not in response.url:
-                print("✅ 登录状态有效")
-                return True
-            else:
-                print("❌ 登录状态已失效")
+            # 检查是否跳转到登录页
+            if 'passport.csdn.net/login' in response.url:
+                print("[ERROR] 登录状态已失效（跳转到登录页）")
                 return False
 
+            # 检查响应状态码
+            if response.status_code != 200:
+                print(f"[ERROR] 登录验证失败（状态码: {response.status_code}）")
+                return False
+
+            # 检查响应内容中是否包含用户信息
+            if '登录' in response.text and '退出' not in response.text:
+                print("[ERROR] 登录状态已失效（页面显示未登录）")
+                return False
+
+            print("[OK] 登录状态有效")
+            return True
+
         except Exception as e:
-            print(f"❌ 验证登录状态异常: {str(e)}")
+            print(f"[ERROR] 验证登录状态异常: {str(e)}")
             return False
 
     def _handle_captcha_manual(self):
         """手动完成验证码"""
-        print("⏸️  请在浏览器窗口中手动完成验证码...")
-        print("⏸️  完成后程序将自动继续...")
+        print("[Pause]  请在浏览器窗口中手动完成验证码...")
+        print("[Pause]  完成后程序将自动继续...")
 
         # 等待验证码完成（最多等待60秒）
         for i in range(60):
@@ -460,7 +484,7 @@ class AuthService:
 
             # 检查是否已经跳转离开登录页
             if 'login' not in current_url and 'passport' not in current_url:
-                print("✅ 验证码已完成，登录成功！")
+                print("[OK] 验证码已完成，登录成功！")
                 return True
 
             # 检查验证码是否还在
@@ -477,93 +501,138 @@ class AuthService:
             except PlaywrightError:
                 pass
 
-        print("⚠️ 验证码等待超时")
+        print("[WARN] 验证码等待超时")
         return False
 
     def _handle_captcha_auto(self) -> bool:
         """自动识别并完成验证码"""
         try:
             if not self.page:
-                print("❌ 浏览器页面不可用，无法自动识别验证码")
+                print("[ERROR] 浏览器页面不可用，无法自动识别验证码")
                 return False
 
             if not (self.use_captcha_service and self.captcha_service):
-                print("⚠️ 未启用验证码服务，无法自动识别")
+                print("[WARN] 未启用验证码服务，无法自动识别")
                 return False
 
-            # 查找验证码图片
-            print("🔍 查找验证码图片...")
-            captcha_locator = self.page.locator("img.geetest_item_img, img[class*='captcha']")
-            if captcha_locator.count() == 0:
-                print("❌ 未找到验证码图片")
+            # 查找验证码元素（CSDN使用canvas绘制，但需要截取完整的验证码区域）
+            print("[Search] 查找验证码元素...")
+
+            # 优先查找包含完整验证码的容器元素
+            captcha_selectors = [
+                ("#click_v2", "完整验证码容器"),  # CSDN验证码的完整容器（包含图片+文字提示）
+                (".verify-img-panel", "验证码图片面板"),  # 验证码面板
+                ("canvas", "Canvas元素"),  # 最后才尝试canvas
+                ("img.geetest_item_img", "极验图片"),  # 极验类型
+                ("img[class*='captcha']", "通用验证码图片")  # 通用验证码图片
+            ]
+
+            captcha_element = None
+            element_type = ""
+            for selector, name in captcha_selectors:
+                locator = self.page.locator(selector)
+                if locator.count() > 0:
+                    elem = locator.first
+                    if elem.is_visible():
+                        captcha_element = elem
+                        element_type = name
+                        print(f"[OK] 找到验证码元素: {name} ({selector})")
+                        break
+
+            if not captcha_element:
+                print("[ERROR] 未找到验证码元素")
                 return False
 
-            captcha_element = captcha_locator.first
-            if not captcha_element.is_visible():
-                print("❌ 验证码图片不可见")
-                return False
-
-            # 保存验证码图片
+            # 保存验证码图片（截取完整的验证码容器，包含图片和文字提示）
             captcha_image_path = "captcha_temp.png"
             captcha_element.screenshot(path=captcha_image_path)
-            if self.debug:
-                print(f"📸 已保存验证码图片: {captcha_image_path}")
+            print(f"[Screenshot] 已保存验证码图片到: {captcha_image_path}")
 
             # 调用验证码识别服务
             coordinates = self.captcha_service.recognize(captcha_image_path)
 
             if not coordinates:
-                print("❌ 验证码识别失败")
+                print("[ERROR] 验证码识别失败")
                 return False
 
-            print(f"✅ 识别到 {len(coordinates)} 个坐标点")
+            print(f"[OK] 识别到 {len(coordinates)} 个坐标点")
 
-            # 获取图片在页面上的位置
-            box = captcha_element.bounding_box()
+            # 找到实际需要点击的canvas元素（在容器内部）
+            # 因为我们截取的可能是完整容器，但点击要在canvas上
+            click_target = None
+            if element_type == "完整验证码容器":
+                # 如果截取的是完整容器，需要找到里面的canvas来点击
+                canvas_locator = self.page.locator("#click_v2 canvas, .verify-img-panel canvas")
+                if canvas_locator.count() > 0:
+                    click_target = canvas_locator.first
+                    print("[Info] 使用容器内的canvas作为点击目标")
+
+            # 如果没有找到canvas，就用原来的元素
+            if not click_target:
+                click_target = captcha_element
+
+            # 获取点击目标在页面上的位置
+            box = click_target.bounding_box()
             if not box:
-                print("❌ 无法获取验证码位置")
+                print("[ERROR] 无法获取验证码位置")
                 return False
 
+            # 点击识别到的坐标
             for i, (x, y) in enumerate(coordinates, 1):
                 click_x = box["x"] + x
                 click_y = box["y"] + y
 
-                print(f"🖱️  点击第 {i} 个坐标: ({x}, {y})")
+                print(f"[Click]  点击第 {i} 个坐标: ({x}, {y})")
                 self.page.mouse.move(click_x, click_y)
                 self.page.mouse.click(click_x, click_y)
                 time.sleep(0.5)
 
-            # 查找并点击确认按钮
-            try:
-                confirm_button = self.page.locator("button[class*='confirm'], button:has-text('确认'), div[class*='commit']")
-                if confirm_button.count() > 0:
-                    confirm_button.first.click()
-                    print("✅ 已点击确认按钮")
-                else:
-                    print("⚠️ 未找到确认按钮，验证码可能自动提交")
-            except PlaywrightError:
-                print("⚠️ 未找到确认按钮，验证码可能自动提交")
+            # CSDN验证码点击完成后会自动提交，不需要点击确认按钮
+            print("[Info] 验证码已点击完成，等待自动验证...")
 
-            # 等待验证结果
+            # 等待验证结果（给服务器时间验证）
             time.sleep(3)
 
-            # 检查验证码是否消失
-            try:
-                captcha_locator = self.page.locator("xpath=//*[contains(text(), '安全验证')]")
-                visible = False
-                for idx in range(captcha_locator.count()):
-                    if captcha_locator.nth(idx).is_visible():
-                        visible = True
-                        break
-                if not visible:
-                    return True
-            except PlaywrightError:
-                pass
+            # 检查验证码是否消失或登录是否成功
+            # 方法1: 检查是否跳转离开登录页
+            current_url = self.page.url
+            if 'login' not in current_url and 'passport' not in current_url:
+                print("[OK] 验证码通过，已跳转")
+                return True
 
-            return False
+            # 方法2: 检查验证码弹窗是否消失
+            try:
+                # 检查多个验证码相关元素
+                captcha_elements = [
+                    ".caption__title",
+                    "xpath=//*[contains(text(), '安全验证')]",
+                    ".verify-img-panel",
+                    "canvas"
+                ]
+
+                all_disappeared = True
+                for selector in captcha_elements:
+                    locator = self.page.locator(selector)
+                    if locator.count() > 0:
+                        elem = locator.first
+                        if elem.is_visible():
+                            all_disappeared = False
+                            break
+
+                if all_disappeared:
+                    print("[OK] 验证码弹窗已消失")
+                    return True
+                else:
+                    print("[WARN] 验证码弹窗仍然可见，可能验证失败")
+                    return False
+
+            except PlaywrightError as e:
+                print(f"[WARN] 检查验证码状态异常: {str(e)[:80]}")
+                # 如果检查异常，保守起见返回False，让手动模式接管
+                return False
 
         except Exception as e:
-            print(f"❌ 自动识别验证码异常: {str(e)}")
+            print(f"[ERROR] 自动识别验证码异常: {str(e)}")
             import traceback
             traceback.print_exc()
             return False
@@ -574,7 +643,7 @@ class AuthService:
             try:
                 self.browser_context.close()
             except Exception as exc:
-                print(f"⚠️ 关闭浏览器上下文失败: {exc}")
+                print(f"[WARN] 关闭浏览器上下文失败: {exc}")
             finally:
                 self.browser_context = None
 
@@ -582,7 +651,7 @@ class AuthService:
             try:
                 self.playwright.stop()
             except Exception as exc:
-                print(f"⚠️ 停止 Playwright 失败: {exc}")
+                print(f"[WARN] 停止 Playwright 失败: {exc}")
             finally:
                 self.playwright = None
 

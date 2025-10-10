@@ -69,7 +69,7 @@ class ChaoJiYingService(CaptchaService):
 
             preview = image_data[:60] + ('...' if len(image_data) > 60 else '')
             print(
-                f"⬆️ 超级鹰请求: user={self.username}, soft_id={self.soft_id}, code_type={code_type}, "
+                f"[Upload] 超级鹰请求: user={self.username}, soft_id={self.soft_id}, code_type={code_type}, "
                 f"image_bytes={len(image_bytes)}, base64_preview={preview}"
             )
 
@@ -83,16 +83,16 @@ class ChaoJiYingService(CaptchaService):
             }
 
             # 发送识别请求
-            print(f"🔍 正在识别验证码...")
+            print(f"[Processing] 正在识别验证码...")
             response = requests.post(self.base_url, data=data, timeout=30)
             result = response.json()
-            print(f"⬇️ 超级鹰响应: {json.dumps(result, ensure_ascii=False)}")
+            print(f"[Receive] 超级鹰响应: {json.dumps(result, ensure_ascii=False)}")
 
             # 检查识别结果
             if result.get('err_no') == 0:
                 # 解析坐标
                 pic_str = result.get('pic_str', '')
-                print(f"✅ 验证码识别成功: {pic_str}")
+                print(f"[OK] 验证码识别成功: {pic_str}")
 
                 # 坐标格式: "x1,y1|x2,y2|x3,y3|x4,y4"
                 coordinates: List[Tuple[int, int]] = []
@@ -103,28 +103,28 @@ class ChaoJiYingService(CaptchaService):
 
                     parts = coord_str.split(',')
                     if len(parts) != 2:
-                        print(f"⚠️ 无效坐标格式: {coord_str}")
+                        print(f"[WARN] 无效坐标格式: {coord_str}")
                         continue
 
                     try:
                         x, y = map(int, parts)
                     except ValueError:
-                        print(f"⚠️ 坐标解析失败: {coord_str}")
+                        print(f"[WARN] 坐标解析失败: {coord_str}")
                         continue
 
                     coordinates.append((x, y))
 
                 if not coordinates:
-                    print("⚠️ 验证码识别成功但未返回坐标")
+                    print("[WARN] 验证码识别成功但未返回坐标")
 
                 return coordinates
             else:
                 error_msg = result.get('err_str', '未知错误')
-                print(f"❌ 验证码识别失败: {error_msg}")
+                print(f"[ERROR] 验证码识别失败: {error_msg}")
                 return None
 
         except Exception as e:
-            print(f"❌ 验证码识别异常: {str(e)}")
+            print(f"[ERROR] 验证码识别异常: {str(e)}")
             return None
 
     def report_error(self, pic_id: str) -> bool:
@@ -201,11 +201,11 @@ class TwoCaptchaService(CaptchaService):
             )
 
             if 'OK|' not in response.text:
-                print(f"❌ 提交失败: {response.text}")
+                print(f"[ERROR] 提交失败: {response.text}")
                 return None
 
             captcha_id = response.text.split('|')[1]
-            print(f"✅ 任务已提交，ID: {captcha_id}")
+            print(f"[OK] 任务已提交，ID: {captcha_id}")
 
             # 等待识别结果
             for i in range(60):
@@ -222,7 +222,7 @@ class TwoCaptchaService(CaptchaService):
 
                 if 'OK|' in result_response.text:
                     result = result_response.text.split('|')[1]
-                    print(f"✅ 验证码识别成功: {result}")
+                    print(f"[OK] 验证码识别成功: {result}")
 
                     # 解析坐标
                     coordinates = []
@@ -236,14 +236,14 @@ class TwoCaptchaService(CaptchaService):
                 elif 'CAPCHA_NOT_READY' in result_response.text:
                     continue
                 else:
-                    print(f"❌ 识别失败: {result_response.text}")
+                    print(f"[ERROR] 识别失败: {result_response.text}")
                     return None
 
-            print("❌ 识别超时")
+            print("[ERROR] 识别超时")
             return None
 
         except Exception as e:
-            print(f"❌ 验证码识别异常: {str(e)}")
+            print(f"[ERROR] 验证码识别异常: {str(e)}")
             return None
 
 
@@ -260,8 +260,8 @@ class MockCaptchaService(CaptchaService):
         Returns:
             模拟的坐标列表
         """
-        print("🔍 使用模拟识别服务...")
-        print("⚠️ 这是测试模式，返回的是固定坐标，实际使用请配置真实的验证码服务")
+        print("[Mock] 使用模拟识别服务...")
+        print("[WARN] 这是测试模式，返回的是固定坐标，实际使用请配置真实的验证码服务")
 
         # 返回示例坐标
         return [(100, 100), (200, 150), (150, 200), (250, 120)]
