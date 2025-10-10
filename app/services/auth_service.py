@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import time
+import random
 from typing import Dict, Optional
 
 from playwright.sync_api import (
@@ -14,6 +15,14 @@ from playwright.sync_api import (
 
 from app.core.config import settings
 from app.services.captcha_service import get_captcha_service
+from app.utils.stealth_utils import (
+    apply_stealth_to_page,
+    get_latest_chrome_ua,
+    get_random_viewport,
+    get_stealth_launch_args,
+    simulate_human_delay,
+    handle_521_error,
+)
 
 
 class AuthService:
@@ -43,6 +52,11 @@ class AuthService:
 
     def _cleanup_user_data_dir(self):
         """清理用户数据目录"""
+        # 当启用持久化指纹时，不清理目录
+        persist_dir = os.getenv("PW_USER_DATA_DIR") or os.getenv("PLAYWRIGHT_USER_DATA_DIR")
+        should_persist = bool(persist_dir) or os.getenv("PW_PERSIST_PROFILE", "1") == "1"
+        if should_persist:
+            return
         if self.user_data_dir and os.path.exists(self.user_data_dir):
             try:
                 shutil.rmtree(self.user_data_dir)
@@ -88,20 +102,25 @@ class AuthService:
         max_retries = 3
         for attempt in range(1, max_retries + 1):
             self._cleanup_user_data_dir()
-            # 使用系统默认临时目录，跨平台兼容（Windows/Linux/Mac）
-            self.user_data_dir = tempfile.mkdtemp(prefix="pw_user_data_")
+            # 计算持久化目录：优先 PW_USER_DATA_DIR，其次 /tmp/pw_profile，最后临时目录
+            env_profile = os.getenv("PW_USER_DATA_DIR") or os.getenv("PLAYWRIGHT_USER_DATA_DIR")
+            if env_profile:
+                self.user_data_dir = env_profile
+            else:
+                # 默认开启轻度持久化，减少新设备指纹命中
+                default_profile = os.path.join(tempfile.gettempdir(), "pw_profile")
+                self.user_data_dir = default_profile
+            try:
+                os.makedirs(self.user_data_dir, exist_ok=True)
+            except Exception:
+                # 回退到真正的临时目录
+                self.user_data_dir = tempfile.mkdtemp(prefix="pw_user_data_")
 
             try:
                 self.playwright = sync_playwright().start()
-                launch_args = [
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-background-timer-throttling",
-                    "--disable-backgrounding-occluded-windows",
-                    "--disable-renderer-backgrounding",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--no-sandbox",
-                ]
+
+                # 使用stealth工具获取优化的启动参数
+                launch_args = get_stealth_launch_args()
 
                 extra_args = os.getenv("PLAYWRIGHT_EXTRA_ARGS")
                 if extra_args:
@@ -109,22 +128,58 @@ class AuthService:
 
                 headless = os.getenv("PLAYWRIGHT_HEADFUL", "0") != "1"
 
+                # 获取随机viewport和最新UA
+                viewport_dict = get_random_viewport()
+                user_agent = get_latest_chrome_ua()
+
+                print(f"[Stealth] 使用viewport: {viewport_dict['width']}x{viewport_dict['height']}")
+                print(f"[Stealth] 使用UA: Chrome 131.0.0.0")
+
                 context = self.playwright.chromium.launch_persistent_context(
                     self.user_data_dir,
                     headless=headless,
                     args=launch_args,
-                    viewport={"width": 1280, "height": 720},
+                    viewport={'width': viewport_dict['width'], 'height': viewport_dict['height']},
                     ignore_https_errors=True,
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+                    user_agent=user_agent,
                     bypass_csp=True,
+                    locale="zh-CN",
+                    timezone_id="Asia/Shanghai",
+                    # 添加现代浏览器特征
+                    extra_http_headers={
+                        'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+                        'sec-ch-ua-mobile': '?0',
+                        'sec-ch-ua-platform': '"Windows"',
+                        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                        'DNT': '1',
+                    },
+                    ignore_default_args=['--enable-automation'],
                 )
 
-                context.add_init_script(
-                    "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
-                )
+                # 应用stealth脚本
+                context.add_init_script("""
+                    // 隐藏webdriver
+                    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+                    // 模拟Chrome对象
+                    window.chrome = {
+                        runtime: {},
+                        loadTimes: function() {},
+                        csi: function() {},
+                        app: {}
+                    };
+
+                    // 隐藏自动化特征
+                    delete navigator.__proto__.webdriver;
+                """)
 
                 self.browser_context = context
                 self.page = context.pages[0] if context.pages else context.new_page()
+
+                # 应用stealth插件到页面
+                print("[Stealth] 应用反检测配置到页面...")
+                apply_stealth_to_page(self.page)
+
                 # 放宽默认等待与导航超时，适配云服务器网络波动
                 try:
                     self.page.set_default_timeout(30000)
@@ -134,7 +189,7 @@ class AuthService:
 
                 # 轻量化资源加载：可选拦截 字体/媒体（不拦图片，避免影响验证码）
                 try:
-                    block_media_fonts = os.getenv("PLAYWRIGHT_BLOCK_MEDIA_FONTS", "1") == "1"
+                    block_media_fonts = os.getenv("PLAYWRIGHT_BLOCK_MEDIA_FONTS", "0") == "1"
                     if block_media_fonts:
                         print("[Net] 资源拦截启用：拦截 font/media，放行 image/js/css")
                     else:
@@ -156,6 +211,11 @@ class AuthService:
                             route.continue_()
 
                     self.page.route("**/*", _route_filter)
+                    try:
+                        # 对齐语言偏好
+                        context.set_extra_http_headers({"Accept-Language": "zh-CN,zh;q=0.9"})
+                    except Exception:
+                        pass
                 except Exception:
                     pass
 
@@ -190,16 +250,36 @@ class AuthService:
 
             print("[Net] 正在访问CSDN登录页面...")
             login_url = 'https://passport.csdn.net/login?code=applets'
+
+            # 使用智能重试处理521等错误
+            if not handle_521_error(page, login_url, max_retries=3):
+                print("[ERROR] 无法访问登录页面，可能被Cloudflare/WAF拦截")
+                return False
+
+            # 模拟人类行为：随机延迟
+            print("[Stealth] 模拟人类浏览行为...")
+            simulate_human_delay(1000, 2500)
+            # 扫码登录模式（通过环境变量控制）
             try:
-                page.goto(login_url, wait_until="domcontentloaded", timeout=45000)
-            except PlaywrightTimeoutError:
-                print("[WARN] 首次打开登录页超时，降级为 commit 策略并延长超时...")
-                try:
-                    page.goto(login_url, wait_until="commit", timeout=60000)
-                except PlaywrightTimeoutError:
-                    print("[ERROR] 登录页仍然超时，请检查容器网络/DNS/出口策略")
-                    return False
-            page.wait_for_timeout(3000)
+                scan_enabled = os.getenv("LOGIN_SCAN_WECHAT", "0") == "1"
+                if scan_enabled:
+                    wait_secs = int(os.getenv("LOGIN_SCAN_WAIT", "30"))
+                    ok = self._attempt_scan_login(wait_ms=wait_secs * 1000)
+                    current_url = page.url
+                    print(f"[Location] 当前页面URL: {current_url}")
+                    if ok and ('login' not in current_url and 'passport' not in current_url):
+                        print("[OK] 登录成功！（扫码）")
+                        if self.browser_context:
+                            context_cookies = self.browser_context.cookies()
+                            self.cookies = {item['name']: item['value'] for item in context_cookies}
+                            print(f"[Note] 获取到 {len(self.cookies)} 个cookie")
+                            self._save_cookies()
+                        return True
+                    else:
+                        print("[ERROR] 扫码模式登录失败或超时")
+                        return False
+            except Exception:
+                pass
 
             print("[Search] 尝试切换到验证码登录模式...")
             try:
@@ -259,17 +339,23 @@ class AuthService:
                 return False
 
             print("[Input] 输入用户名和密码...")
-            # 清空并输入用户名
+            # 清空并输入用户名（加入人类输入延时）
             username_input.click()
-            username_input.fill("")  # 清空
-            username_input.fill(username)  # 输入
+            username_input.fill("")
+            try:
+                username_input.type(username, delay=random.randint(60, 120))
+            except Exception:
+                username_input.fill(username)
             print(f"  已输入用户名: {username}")
             page.wait_for_timeout(800)
 
-            # 清空并输入密码
+            # 清空并输入密码（加入人类输入延时）
             password_input.click()
-            password_input.fill("")  # 清空
-            password_input.fill(password)  # 输入
+            password_input.fill("")
+            try:
+                password_input.type(password, delay=random.randint(60, 120))
+            except Exception:
+                password_input.fill(password)
             print(f"  已输入密码: {'*' * len(password)}")
             page.wait_for_timeout(800)
 
@@ -324,6 +410,7 @@ class AuthService:
             ]
 
             captcha_triggered = False
+            captcha_handled = False
             for i in range(20):
                 try:
                     # 成功登录：URL 跳出 passport/login 即认为成功
@@ -346,6 +433,7 @@ class AuthService:
                             success = self._handle_captcha_auto()
                             if success:
                                 print("[OK] 验证码自动识别完成！")
+                                captcha_handled = True
                             else:
                                 print("[ERROR] 自动识别失败，切换到手动模式")
                                 self._handle_captcha_manual()
@@ -358,6 +446,14 @@ class AuthService:
                     pass
                 page.wait_for_timeout(1000)
 
+            # 若验证码已处理，按需等待 3 秒让页面自然跳转，再继续判断是否仍在登录页
+            try:
+                if captcha_handled:
+                    print("[Wait] 验证码通过，等待 3 秒以便页面跳转...")
+                    page.wait_for_timeout(3000)
+            except PlaywrightError:
+                pass
+
             current_url = page.url
             print(f"[Location] 当前页面URL: {current_url}")
 
@@ -369,6 +465,10 @@ class AuthService:
                         text = elem.inner_text().strip()
                         if text and '终于等到你' not in text:
                             print(f"[WARN] 页面提示: {text}")
+                # 明确识别短信校验提示
+                sms_locator = page.locator("xpath=//*[contains(text(), '发送短信进行安全验证') or contains(text(),'短信')]")
+                if sms_locator.count() > 0 and sms_locator.first.is_visible():
+                    print("[MFA] 需要短信验证，自动流程终止，请改为人工完成或复用持久化登录状态")
             except PlaywrightError:
                 pass
 
@@ -513,11 +613,31 @@ class AuthService:
                 return False
 
             # 检查响应内容中是否包含用户信息
-            if '登录' in response.text and '退出' not in response.text:
+            # 优先检查是否有用户特定内容（更可靠）
+            user_indicators = [
+                '退出',
+                '个人中心',
+                '我的博客',
+            ]
+
+            # 如果有UserName，也检查用户名是否出现在页面中
+            if 'UserName' in self.cookies and self.cookies['UserName']:
+                user_indicators.append(self.cookies['UserName'])
+
+            # 检查是否有任何用户特定内容
+            has_user_content = any(indicator in response.text for indicator in user_indicators)
+
+            if has_user_content:
+                print("[OK] 登录状态有效（检测到用户特定内容）")
+                return True
+
+            # 如果没有用户特定内容，再检查是否显示登录按钮
+            if '登录' in response.text and not has_user_content:
                 print("[ERROR] 登录状态已失效（页面显示未登录）")
                 return False
 
-            print("[OK] 登录状态有效")
+            # 默认情况：如果没有明确的登录标识，且没有重定向，认为已登录
+            print("[OK] 登录状态有效（未检测到未登录标识）")
             return True
 
         except Exception as e:
@@ -674,7 +794,34 @@ class AuthService:
             print("[Info] 验证码已点击完成，等待自动验证...")
 
             # 等待验证结果（给服务器时间验证）
-            time.sleep(3)
+            time.sleep(2)
+
+            # 兜底：部分验证需要点击“确认/提交”按钮
+            try:
+                submit_candidates = [
+                    "button:has-text(\"确认\")",
+                    "button:has-text(\"验证\")",
+                    "button:has-text(\"提交\")",
+                    ".geetest_commit",
+                    ".captcha-verify-submit",
+                    "text=确认",
+                    "text=验证",
+                    "text=提交",
+                    "text=完成",
+                    "text=下一步",
+                ]
+                for sel in submit_candidates:
+                    loc = self.page.locator(sel)
+                    if loc.count() > 0 and loc.first.is_visible():
+                        print(f"[Info] 尝试点击验证码提交按钮: {sel}")
+                        try:
+                            loc.first.click()
+                        except PlaywrightError:
+                            self.page.evaluate("(el) => el.click()", loc.first.element_handle())
+                        time.sleep(1)
+                        break
+            except PlaywrightError:
+                pass
 
             # 检查验证码是否消失或登录是否成功
             # 方法1: 检查是否跳转离开登录页
@@ -718,6 +865,306 @@ class AuthService:
             print(f"[ERROR] 自动识别验证码异常: {str(e)}")
             import traceback
             traceback.print_exc()
+            return False
+
+    def _get_scan_output_dir(self):
+        """获取扫码二维码保存目录，优先使用环境变量，然后尝试多个候选目录。
+
+        Returns:
+            str or None: 可写的目录路径，如果所有目录都不可写则返回 None
+        """
+        import tempfile
+
+        # 输出目录优先级：env SCAN_OUTPUT_DIR -> tempfile.gettempdir()/scan -> /tmp/scan -> /app/pw_profile/scan -> tempfile.gettempdir()
+        candidate_dirs = []
+        env_scan_dir = os.getenv("SCAN_OUTPUT_DIR")
+        if env_scan_dir:
+            candidate_dirs.append(env_scan_dir)
+
+        # 添加跨平台的临时目录
+        temp_base = tempfile.gettempdir()
+        candidate_dirs.append(os.path.join(temp_base, "scan"))
+
+        # 添加传统Linux目录（用于向后兼容）
+        candidate_dirs.extend(["/tmp/scan", "/app/pw_profile/scan", "/tmp"])
+
+        # Windows 系统会使用上面的 tempfile.gettempdir()
+        save_dir = None
+        for d in candidate_dirs:
+            try:
+                os.makedirs(d, exist_ok=True)
+                # 尝试写入测试文件验证权限
+                test_name = os.path.join(d, ".scan_write_test")
+                with open(test_name, "wb") as t:
+                    t.write(b"ok")
+                os.remove(test_name)
+                save_dir = d
+                break
+            except Exception:
+                continue
+
+        return save_dir
+
+    def _attempt_scan_login(self, wait_ms: int = 30000) -> bool:
+        """微信扫码登录模式：抓取页面上的 data:image Base64 二维码并保存到 /tmp/scan。
+
+        Args:
+            wait_ms: 扫码等待时长（毫秒），默认 30 秒。
+
+        Returns:
+            bool: 扫码后是否已跳转离开登录页。
+        """
+        try:
+            if not self.page:
+                print("[ERROR] 页面不可用，无法执行扫码登录模式")
+                return False
+
+            page = self.page
+            print("[Scan] 尝试进入微信扫码登录模式…")
+
+            # 首先检查是否已经在微信扫码页面
+            wechat_already_active = False
+            try:
+                # 检查是否有微信二维码容器
+                wechat_containers = [
+                    ".login-code-wechat",
+                    ".public-code",
+                    "#scan_box_applets"
+                ]
+                for sel in wechat_containers:
+                    loc = page.locator(sel)
+                    if loc.count() > 0 and loc.first.is_visible():
+                        wechat_already_active = True
+                        print(f"[Scan] 已在微信扫码页面（检测到容器: {sel}）")
+                        break
+            except PlaywrightError:
+                pass
+
+            # 如果不在微信扫码页面，尝试切换
+            if not wechat_already_active:
+                print("[Scan] 尝试切换到微信扫码登录...")
+                # 先把当前页面HTML保存下来，便于排查为何未展示扫码页
+                try:
+                    from datetime import datetime
+                    save_dir = self._get_scan_output_dir()
+                    if save_dir:
+                        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        html_path = os.path.join(save_dir, f"login_page_before_scan_{ts}.html")
+                        with open(html_path, "w", encoding="utf-8") as f:
+                            f.write(page.content())
+                        print(f"[Scan] 当前页面HTML已保存: {html_path}")
+                except Exception as e:
+                    print(f"[Scan] 保存当前页面HTML失败: {e}")
+
+                # 步骤1: 展开"其他登录方式"
+                try:
+                    other_login = page.locator("text=其他登录方式")
+                    if other_login.count() > 0 and other_login.first.is_visible():
+                        print("[Scan] 点击'其他登录方式'")
+                        other_login.first.click()
+                        page.wait_for_timeout(1500)  # 增加等待时间
+                    else:
+                        print("[Scan] 未找到'其他登录方式'按钮，尝试继续...")
+                except PlaywrightError as e:
+                    print(f"[Scan] 点击'其他登录方式'失败: {str(e)[:80]}")
+
+                # 步骤2: 点击微信登录图标/按钮
+                wechat_clicked = False
+                wechat_opts = [
+                    ("text=微信扫码登录", "文本按钮"),
+                    ("span.login-third-wechat", "图标span"),
+                    (".login-third-wechat", "图标class"),
+                    ("img[alt*='微信']", "微信图标"),
+                    ("img[src*='wechat']", "微信图片"),
+                ]
+
+                for sel, desc in wechat_opts:
+                    try:
+                        loc = page.locator(sel)
+                        if loc.count() > 0:
+                            elem = loc.first
+                            if elem.is_visible():
+                                print(f"[Scan] 找到微信登录入口: {desc} ({sel})")
+                                try:
+                                    elem.click()
+                                except PlaywrightError:
+                                    # 使用JavaScript点击作为后备
+                                    page.evaluate("(el)=>el.click()", elem.element_handle())
+
+                                wechat_clicked = True
+                                page.wait_for_timeout(2000)  # 等待二维码加载
+                                print(f"[Scan] 已点击微信登录: {desc}")
+                                break
+                    except PlaywrightError as e:
+                        print(f"[Scan] 尝试 {desc} 失败: {str(e)[:60]}")
+                        continue
+
+                if not wechat_clicked:
+                    print("[WARN] 未能点击微信登录入口，可能页面结构已变化")
+
+            # 现在查找二维码（增加更多选择器和重试）
+            print("[Scan] 查找二维码...")
+
+            selectors = [
+                # base64格式的二维码
+                ".login-code-wechat img[src^='data:']",
+                ".public-code img[src^='data:']",
+                "img[src^='data:image'][src*='base64']",
+                # 远程URL的二维码
+                ".login-code-wechat img[src*='qr']",
+                ".public-code img",
+                ".login-code-wechat canvas",  # 有些网站用canvas绘制二维码
+                "img[alt*='二维码']",
+                "img[alt*='扫码']",
+            ]
+
+            img_src = None
+
+            # 增加等待时间到20秒，每秒检查一次；检测不到时尝试点击“二维码失效 点击重试”
+            for attempt in range(20):
+                for sel in selectors:
+                    try:
+                        loc = page.locator(sel)
+                        if loc.count() > 0:
+                            elem = loc.first
+                            if elem.is_visible():
+                                src = elem.get_attribute("src")
+                                if src:
+                                    img_src = src
+                                    print(f"[Scan] 找到二维码: {sel}")
+                                    break
+                    except PlaywrightError:
+                        continue
+
+                if img_src:
+                    break
+
+                # 未找到二维码时，尝试点击“二维码失效 点击重试”入口刷新二维码
+                try:
+                    # 1) 精确匹配包含提示文本的标题
+                    retry_title = page.locator("xpath=//span[contains(@class,'app-title') and contains(text(),'二维码失效')] | //span[contains(text(),'点击重试')]")
+                    if retry_title.count() > 0 and retry_title.first.is_visible():
+                        print("[Scan] 检测到二维码失效提示，尝试点击重试…")
+                        try:
+                            retry_title.first.click()
+                        except PlaywrightError:
+                            page.evaluate("(el)=>el.click()", retry_title.first.element_handle())
+                        page.wait_for_timeout(1500)
+                    else:
+                        # 2) 点击容器或图标兜底
+                        fail_container = page.locator(".app-fail")
+                        icon_retry = page.locator(".app-fail .app-code-icon, .app-fail .huanyipi")
+                        target = None
+                        if icon_retry.count() > 0 and icon_retry.first.is_visible():
+                            target = icon_retry.first
+                        elif fail_container.count() > 0 and fail_container.first.is_visible():
+                            target = fail_container.first
+                        if target is not None:
+                            print("[Scan] 点击二维码失败容器以刷新…")
+                            try:
+                                target.click()
+                            except PlaywrightError:
+                                page.evaluate("(el)=>el.click()", target.element_handle())
+                            page.wait_for_timeout(1500)
+                except PlaywrightError:
+                    pass
+
+                # 每5秒输出一次等待信息
+                if attempt % 5 == 0 and attempt > 0:
+                    print(f"[Scan] 仍在等待二维码出现... ({attempt}/20秒)")
+
+                page.wait_for_timeout(1000)
+
+            if not img_src:
+                print("[ERROR] 未找到二维码图片，尝试截图整个页面...")
+                # 作为兜底，截图整个登录区域
+                try:
+                    import tempfile
+                    from datetime import datetime
+                    save_dir = self._get_scan_output_dir()
+                    if save_dir:
+                        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        fallback_path = os.path.join(save_dir, f"login_page_{ts}.png")
+                        page.screenshot(path=fallback_path)
+                        print(f"[Scan] 登录页面截图已保存: {fallback_path}")
+                        print("[Scan] 请查看截图，如有二维码请手动扫描")
+                except Exception as e:
+                    print(f"[Scan] 截图失败: {e}")
+
+                return False
+
+            print(f"[Scan] 二维码类型: {'base64' if img_src.startswith('data:') else 'URL'}")
+
+            # 解析并保存到扫描输出目录
+            import base64
+            import re
+            from datetime import datetime
+
+            header, _, b64data = img_src.partition(",")
+            if not b64data:
+                b64data = re.sub(r"^data:image/[^;]+;base64,", "", img_src)
+
+            try:
+                img_bytes = base64.b64decode(b64data)
+            except Exception as e:
+                print(f"[Scan] 解码二维码失败: {e}")
+                return False
+
+            # 推断扩展名
+            ext = "png"
+            if "jpeg" in header or "jpg" in header:
+                ext = "jpg"
+            elif "png" in header:
+                ext = "png"
+
+            # 获取可写的输出目录
+            save_dir = self._get_scan_output_dir()
+            if not save_dir:
+                print("[Scan] 无可写目录用于保存二维码，请检查卷挂载/权限")
+                return False
+
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            file_path = os.path.join(save_dir, f"wechat_qr_{ts}.{ext}")
+            try:
+                with open(file_path, "wb") as f:
+                    f.write(img_bytes)
+                print(f"[Scan] 二维码已保存: {file_path}")
+                print("[Scan] 请使用微信扫描该二维码完成登录…")
+            except Exception as e:
+                print(f"[Scan] 保存二维码失败: {e}")
+                return False
+
+            # 如果后续页面结构不是 base64，而是远程图片，补充一个容器截图作为兜底
+            try:
+                container = None
+                for sel in [".login-code-wechat .public-code", "#scan_box_applets", ".login-code-wechat"]:
+                    loc = page.locator(sel)
+                    if loc.count() > 0 and loc.first.is_visible():
+                        container = loc.first
+                        break
+                if container:
+                    snap_path = os.path.join(save_dir, f"wechat_qr_container_{ts}.png")
+                    container.screenshot(path=snap_path)
+                    print(f"[Scan] 容器截图已保存: {snap_path}")
+            except PlaywrightError:
+                pass
+
+            # 等待扫码确认
+            try:
+                page.wait_for_timeout(int(wait_ms))
+            except Exception:
+                time.sleep(wait_ms / 1000.0)
+
+            cur = page.url
+            if 'login' not in cur and 'passport' not in cur:
+                print("[Scan] 扫码登录成功，已离开登录页")
+                return True
+
+            print("[Scan] 仍在登录页，可能未扫码或未确认")
+            return False
+
+        except Exception as e:
+            print(f"[Scan] 扫码登录流程异常: {e}")
             return False
 
     def close(self):

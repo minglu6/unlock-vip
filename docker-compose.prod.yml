@@ -130,6 +130,10 @@ services:
       - CSDN_USERNAME=${CSDN_USERNAME}
       - CSDN_PASSWORD=${CSDN_PASSWORD}
       - CAPTCHA_SERVICE=${CAPTCHA_SERVICE}
+      - PW_USER_DATA_DIR=/app/pw_profile
+      - PW_PERSIST_PROFILE=1
+      - PLAYWRIGHT_BLOCK_MEDIA_FONTS=0
+      - SCAN_OUTPUT_DIR=/tmp/scan
       - HOME=/app
     env_file:
       - .env.prod
@@ -138,6 +142,9 @@ services:
       - ./downloads:/app/downloads
       - ./cookies.json:/app/cookies.json
       - ./logs:/app/logs
+      - ./pw_profile:/app/pw_profile
+      # 扫码二维码输出目录（容器 -> 宿主机）
+      - /tmp/scan:/tmp/scan
     depends_on:
       mysql:
         condition: service_healthy

@@ -181,6 +181,125 @@ class ArticleService:
             
             logger.info(f"响应状态码: {response.status_code}")
             logger.info(f"响应内容: {response.text[:500]}")
+
+            # 浏览器回退：若命中WAF或 5xx/521，尝试用浏览器在同源上下文内发起fetch
+            def _post_with_browser(aid: int):
+                from playwright.sync_api import sync_playwright
+                from app.utils.stealth_utils import (
+                    apply_stealth_to_page,
+                    get_latest_chrome_ua,
+                    get_random_viewport,
+                    get_stealth_launch_args,
+                    simulate_human_delay,
+                    handle_521_error,
+                )
+
+                logger.info("[Fallback] 使用浏览器上下文调用解锁接口（启用Stealth）...")
+                try:
+                    with sync_playwright() as p:
+                        # 尝试使用持久化 profile（可继承站点令牌）
+                        import os, tempfile
+                        profile_dir = os.getenv("PW_USER_DATA_DIR") or os.path.join(tempfile.gettempdir(), "pw_profile")
+
+                        # 使用stealth配置
+                        launch_args = get_stealth_launch_args()
+                        viewport = get_random_viewport()
+                        user_agent = get_latest_chrome_ua()
+
+                        ctx = None
+                        try:
+                            ctx = p.chromium.launch_persistent_context(
+                                profile_dir,
+                                headless=True,
+                                args=launch_args,
+                                locale="zh-CN",
+                                timezone_id="Asia/Shanghai",
+                                user_agent=user_agent,
+                                viewport={'width': viewport['width'], 'height': viewport['height']},
+                                extra_http_headers={
+                                    'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+                                    'sec-ch-ua-mobile': '?0',
+                                    'sec-ch-ua-platform': '"Windows"',
+                                },
+                                ignore_default_args=['--enable-automation'],
+                                ignore_https_errors=True,
+                                bypass_csp=True,
+                            )
+                        except Exception:
+                            # 回退到无痕上下文并注入 cookies
+                            br = p.chromium.launch(
+                                headless=True,
+                                args=launch_args,
+                                ignore_default_args=['--enable-automation']
+                            )
+                            ctx = br.new_context(
+                                locale="zh-CN",
+                                timezone_id="Asia/Shanghai",
+                                user_agent=user_agent,
+                                viewport={'width': viewport['width'], 'height': viewport['height']},
+                                extra_http_headers={
+                                    'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+                                    'sec-ch-ua-mobile': '?0',
+                                    'sec-ch-ua-platform': '"Windows"',
+                                },
+                                ignore_https_errors=True,
+                                bypass_csp=True,
+                            )
+                            ck = self.auth_service.get_cookies() or {}
+                            if ck:
+                                ctx.add_cookies([{ 'name': k, 'value': v, 'domain': '.csdn.net', 'path': '/', 'httpOnly': False, 'secure': True } for k,v in ck.items()])
+
+                        page = ctx.new_page()
+
+                        # 应用stealth配置
+                        logger.info("[Stealth] 应用反检测配置...")
+                        apply_stealth_to_page(page)
+
+                        # 先进入文章页，确保同源，使用智能重试
+                        referer_url = f"https://blog.csdn.net/article/details/{aid}"
+                        if not handle_521_error(page, referer_url, max_retries=3):
+                            logger.error("[Fallback] 无法访问文章页面")
+                            try:
+                                if hasattr(ctx, 'browser') and ctx.browser:
+                                    ctx.browser.close()
+                            except Exception:
+                                pass
+                            return None
+
+                        # 模拟人类行为
+                        simulate_human_delay(1000, 2000)
+                        js = """
+                            async (unlockUrl, aid) => {
+                              const res = await fetch(unlockUrl, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
+                                body: JSON.stringify({ articleId: Number(aid) })
+                              });
+                              const text = await res.text();
+                              return { status: res.status, text };
+                            }
+                        """
+                        result = page.evaluate(js, unlock_url, str(aid))
+                        logger.info(f"[Fallback] 浏览器fetch返回: status={result['status']}, text={result['text'][:300]}")
+                        # 回写 cookies（可能新增 WAF 令牌）
+                        try:
+                            new_cookies = ctx.cookies()
+                            merged = dict(self.auth_service.get_cookies())
+                            for item in new_cookies:
+                                merged[item.get('name')] = item.get('value')
+                            self.auth_service.cookies = merged
+                            if hasattr(self.auth_service, '_save_cookies'):
+                                self.auth_service._save_cookies()
+                        except Exception:
+                            pass
+                        try:
+                            ctx.browser.close()
+                        except Exception:
+                            pass
+                        return result
+                except Exception as e:
+                    logger.error(f"[Fallback] 浏览器调用解锁接口失败: {e}")
+                    return None
             
             try:
                 result = response.json()
@@ -201,9 +320,22 @@ class ArticleService:
                     return False
                     
             except json.JSONDecodeError:
-                logger.warning(f"解锁API返回非JSON响应: {response.text[:100]}")
+                # 可能命中WAF或空响应，尝试浏览器回退
+                txt = response.text[:500]
+                logger.warning(f"解锁API返回非JSON响应: {txt}")
+                waf_hit = any(x in (txt or '').lower() for x in ['security verification','cdn_cgi_bs_captcha','<html'])
+                if waf_hit or response.status_code in (521, 403, 429, 503):
+                    fb = _post_with_browser(int(article_id))
+                    if fb and fb.get('status') == 200:
+                        try:
+                            fb_json = json.loads(fb.get('text') or '{}')
+                            logger.info(f"[Fallback] 解锁API响应(浏览器): {json.dumps(fb_json, ensure_ascii=False)}")
+                            if fb_json.get('code') in (200, 400):
+                                logger.info(f"[OK] 浏览器回退下解锁成功/或非VIP")
+                                return True
+                        except Exception:
+                            pass
                 logger.info(f"{'='*60}\n")
-                # 无法解析响应，可能需要重新登录
                 if retry_with_login:
                     logger.info("尝试使用回退方法...")
                     return self._unlock_vip_article_fallback(article_id, retry_with_login=False)
@@ -472,15 +604,154 @@ class ArticleService:
 
         def fetch_html(current_session: requests.Session) -> str:
             logger.info(f"正在下载文章页面: {url}")
-            response = current_session.get(url, timeout=30, verify=False)
-            response.raise_for_status()
-            return response.text
+            try:
+                response = current_session.get(url, timeout=30, verify=False)
+                if response.status_code != 200:
+                    logger.warning(f"[WARN] 请求返回非200: {response.status_code}")
+                    raise requests.exceptions.HTTPError(f"HTTP {response.status_code}")
+                return response.text
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"[WARN] requests 获取失败: {e}")
+                raise
+
+        def fetch_html_with_browser(target_url: str):
+            """使用 Playwright 获取页面 HTML 并同步 cookies，绕过 5xx/WAF。
+
+            应用Stealth配置以避免521错误和反爬虫检测。
+            """
+            from playwright.sync_api import sync_playwright
+            from app.utils.stealth_utils import (
+                apply_stealth_to_page,
+                get_latest_chrome_ua,
+                get_random_viewport,
+                get_stealth_launch_args,
+                simulate_human_delay,
+                handle_521_error,
+            )
+
+            html = None
+            logger.info("[Fallback] 使用浏览器回退获取页面HTML（启用Stealth）...")
+
+            try:
+                with sync_playwright() as p:
+                    # 使用stealth启动参数
+                    launch_args = get_stealth_launch_args()
+
+                    browser = p.chromium.launch(
+                        headless=True,
+                        args=launch_args,
+                        ignore_default_args=['--enable-automation']
+                    )
+
+                    # 使用随机viewport和最新UA
+                    viewport = get_random_viewport()
+                    user_agent = get_latest_chrome_ua()
+
+                    context = browser.new_context(
+                        locale="zh-CN",
+                        timezone_id="Asia/Shanghai",
+                        user_agent=user_agent,
+                        viewport={'width': viewport['width'], 'height': viewport['height']},
+                        extra_http_headers={
+                            'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+                            'sec-ch-ua-mobile': '?0',
+                            'sec-ch-ua-platform': '"Windows"',
+                            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                            'DNT': '1',
+                        },
+                        ignore_https_errors=True,
+                        bypass_csp=True,
+                    )
+
+                    # 注入cookies
+                    cookies_dict = self.auth_service.get_cookies()
+                    if cookies_dict:
+                        cookies_list = []
+                        for name, value in cookies_dict.items():
+                            cookies_list.append({
+                                'name': name,
+                                'value': value,
+                                'domain': '.csdn.net',
+                                'path': '/',
+                                'httpOnly': False,
+                                'secure': True,
+                            })
+                        context.add_cookies(cookies_list)
+
+                    page2 = context.new_page()
+
+                    # 应用stealth配置
+                    logger.info("[Stealth] 应用反检测配置...")
+                    apply_stealth_to_page(page2)
+
+                    page2.set_default_timeout(30000)
+                    page2.set_default_navigation_timeout(30000)
+
+                    # 使用智能重试访问页面，处理521错误
+                    if not handle_521_error(page2, target_url, max_retries=3):
+                        logger.error("[Fallback] 无法访问目标页面，可能被Cloudflare/WAF拦截")
+                        browser.close()
+                        return None
+
+                    # 模拟人类行为
+                    simulate_human_delay(500, 1500)
+
+                    html = page2.content()
+
+                    # 同步 cookies 回到 auth_service（可能包含通过WAF所需的令牌）
+                    try:
+                        new_cookies = context.cookies()
+                        if new_cookies:
+                            merged = dict(self.auth_service.get_cookies())
+                            for item in new_cookies:
+                                merged[item.get('name')] = item.get('value')
+                            self.auth_service.cookies = merged
+                            # 最好保存一下，便于下次直接使用
+                            if hasattr(self.auth_service, '_save_cookies'):
+                                self.auth_service._save_cookies()
+                            logger.info(f"[Cookies] 已同步{len(new_cookies)}个cookies")
+                    except Exception as e:
+                        logger.warning(f"[Cookies] Cookie同步失败: {e}")
+
+                    browser.close()
+
+            except Exception as e:
+                logger.error(f"[Fallback] 浏览器回退失败: {str(e)}")
+                import traceback
+                logger.debug(traceback.format_exc())
+
+            return html
+
+        def is_waf_page(html_text: str) -> bool:
+            if not html_text:
+                return False
+            waf_indicators = [
+                '安全验证',
+                'Security Verification',
+                'cdn_cgi_bs_captcha',
+                'init_waf.js',
+            ]
+            lower = html_text.lower()
+            return any(ind.lower() in lower for ind in waf_indicators)
 
         session = build_session()
         unlock_success = False
 
         try:
-            full_html = fetch_html(session)
+            try:
+                full_html = fetch_html(session)
+                # 如果命中站点WAF/安全验证页面，走浏览器回退
+                if is_waf_page(full_html):
+                    logger.warning("[WAF] 检测到安全验证页面，启用浏览器回退…")
+                    fallback_html = fetch_html_with_browser(url)
+                    if fallback_html:
+                        full_html = fallback_html
+                    else:
+                        raise Exception("WAF拦截且浏览器回退失败")
+            except requests.exceptions.RequestException as _e:
+                full_html = fetch_html_with_browser(url)
+                if not full_html:
+                    raise
 
             # 检查是否为VIP锁定文章
             # 对于带cookies访问，正常情况下不应有锁定标识
