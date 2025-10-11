@@ -1,8 +1,5 @@
 # 生产环境 Docker Compose 配置
 # 包含 Nginx 反向代理和 SSL 支持
-
-version: '3.8'
-
 services:
   # MySQL 数据库
   mysql:
@@ -152,7 +149,8 @@ services:
         condition: service_healthy
     restart: always
     # 并发维持为1，避免内存不足时浏览器启动失败
-    command: celery -A app.core.celery_app worker --loglevel=info --concurrency=1 --pool=solo --uid=nobody --gid=nogroup
+    # Run Celery as default container user (root) to avoid permission issues on bind mounts (e.g., ./downloads on Windows)
+    command: celery -A app.core.celery_app worker --loglevel=info --concurrency=1 --pool=solo
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.core.celery_app inspect ping -d celery@$$HOSTNAME"]
       interval: 30s

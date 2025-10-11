@@ -89,6 +89,9 @@ COPY .env* ./
 # 创建必要的目录
 RUN mkdir -p downloads logs
 
+# 给目录添加写权限
+RUN chmod -R 777 downloads logs
+
 # 设置文件权限
 RUN chmod +x run.py manage_db.py celery_worker.py
 
