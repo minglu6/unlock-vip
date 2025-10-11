@@ -3,8 +3,10 @@ Playwright Stealth工具模块 - 绕过反爬虫检测
 
 提供浏览器指纹伪装、人类行为模拟、反检测配置等功能
 """
+import os
 import random
 import time
+from datetime import datetime
 from typing import Optional, Dict, Any
 from playwright.sync_api import Page, BrowserContext
 from playwright_stealth.stealth import Stealth
@@ -292,6 +294,59 @@ def wait_for_cloudflare_clearance(page: Page, timeout_ms: int = 30000) -> bool:
     return False
 
 
+def _is_waf_security_verification(page: Page) -> bool:
+    """
+    检测是否命中通用 WAF/安全验证页（包含中文“安全验证”与 Cloudflare 挑战等）。
+
+    Args:
+        page: Playwright 页面对象
+
+    Returns:
+        bool: 是否检测到安全验证页面
+    """
+    try:
+        content = (page.content() or "").lower()
+        indicators = [
+            "安全验证",  # 中文站常见
+            "please complete security verification",
+            "security verification",
+            "cdn_cgi_bs_captcha",
+            "init_waf.js",
+            "cf-browser-verification",
+            "cdn-cgi/challenge-platform",
+            "checking your browser",
+            "just a moment",
+        ]
+        return any(ind in content for ind in indicators)
+    except Exception:
+        return False
+
+
+def _save_waf_screenshot(page: Page, prefix: str = "waf_detected") -> str:
+    """
+    将当前页面截图保存到 /tmp 目录，文件名包含时间戳。
+
+    Args:
+        page: Playwright 页面对象
+        prefix: 文件名前缀
+
+    Returns:
+        str: 实际保存的文件路径；若失败返回空字符串
+    """
+    try:
+        # 统一保存到 /tmp（在 Windows 下会映射为当前盘符根目录的 \tmp）
+        save_dir = "/tmp"
+        os.makedirs(save_dir, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(save_dir, f"{prefix}_{ts}.png")
+        page.screenshot(path=path, full_page=True)
+        print(f"[WAF] 安全验证页面截图已保存: {path}")
+        return path
+    except Exception as _:
+        # 截图失败不影响后续流程
+        return ""
+
+
 def handle_521_error(page: Page, url: str, max_retries: int = 3) -> bool:
     """
     处理521错误（Web服务器宕机 / Cloudflare保护）
@@ -317,8 +372,12 @@ def handle_521_error(page: Page, url: str, max_retries: int = 3) -> bool:
                 time.sleep(2 ** attempt)  # 指数退避
                 continue
 
-            # 检查是否为Cloudflare挑战
-            if is_cloudflare_challenge(page):
+            # 检查是否为 WAF/Cloudflare 挑战页，若命中先截图到 /tmp
+            if is_cloudflare_challenge(page) or _is_waf_security_verification(page):
+                try:
+                    _save_waf_screenshot(page)
+                except Exception:
+                    pass
                 if wait_for_cloudflare_clearance(page):
                     return True
                 else:
