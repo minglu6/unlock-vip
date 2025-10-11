@@ -65,6 +65,37 @@ class AuthService:
                 print(f"[WARN] 清理 user-data-dir 失败: {exc}")
         self.user_data_dir = None
 
+    def _save_failure_screenshot(self, prefix: str = "login_failure"):
+        """保存登录失败时的截图到/tmp目录
+
+        Args:
+            prefix: 文件名前缀
+        """
+        if not self.page:
+            return
+
+        try:
+            from datetime import datetime
+            import tempfile
+
+            # 使用跨平台的临时目录
+            tmp_dir = tempfile.gettempdir()
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            # 保存截图
+            screenshot_path = os.path.join(tmp_dir, f"{prefix}_{ts}.png")
+            self.page.screenshot(path=screenshot_path, full_page=True)
+            print(f"[Screenshot] 登录失败截图已保存: {screenshot_path}")
+
+            # 保存HTML以便调试
+            html_path = os.path.join(tmp_dir, f"{prefix}_{ts}.html")
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(self.page.content())
+            print(f"[HTML] 登录失败页面HTML已保存: {html_path}")
+
+        except Exception as e:
+            print(f"[WARN] 保存失败截图时出错: {e}")
+
     def _init_captcha_service(self):
         """初始化验证码识别服务"""
         service_type = settings.CAPTCHA_SERVICE
@@ -281,14 +312,16 @@ class AuthService:
             except Exception:
                 pass
 
-            print("[Search] 尝试切换到验证码登录模式...")
+            # 检查是否有登录弹窗
+            print("[Check] 检查页面是否存在登录弹窗...")
             try:
-                verification_login_tab = page.locator("text=验证码登录")
-                if verification_login_tab.count() > 0:
-                    verification_login_tab.first.click()
-                    page.wait_for_timeout(2000)
+                login_dialog = page.locator("div.passport-main.new-height, .login-box, .passport-main")
+                if login_dialog.count() > 0 and login_dialog.first.is_visible():
+                    print("[OK] 检测到登录弹窗，页面已准备就绪")
+                else:
+                    print("[WARN] 未检测到登录弹窗，页面可能未正确加载")
             except PlaywrightError as exc:
-                print(f"  未找到验证码登录标签: {str(exc)[:80]}")
+                print(f"[WARN] 检查登录弹窗失败: {str(exc)[:80]}")
 
             print("[Search] 查找其他登录方式...")
             try:
@@ -328,6 +361,7 @@ class AuthService:
                 print("[OK] 找到用户名输入框")
             except PlaywrightTimeoutError:
                 print("[ERROR] 未找到用户名输入框")
+                self._save_failure_screenshot("login_no_username_input")
                 return False
 
             print("[Search] 查找密码输入框...")
@@ -336,6 +370,7 @@ class AuthService:
                 print("[OK] 找到密码输入框")
             except PlaywrightTimeoutError:
                 print("[ERROR] 未找到密码输入框")
+                self._save_failure_screenshot("login_no_password_input")
                 return False
 
             print("[Input] 输入用户名和密码...")
@@ -371,6 +406,7 @@ class AuthService:
                 login_button = page.wait_for_selector("button.base-button", timeout=10000)
             except PlaywrightTimeoutError:
                 print("[ERROR] 未找到登录按钮")
+                self._save_failure_screenshot("login_no_button")
                 return False
 
             print("[OK] 找到登录按钮")
@@ -482,6 +518,7 @@ class AuthService:
                 return True
 
             print("[ERROR] 登录失败，仍在登录页面")
+            self._save_failure_screenshot("login_still_on_login_page")
             return False
 
         except Exception as exc:
@@ -523,14 +560,6 @@ class AuthService:
                 print(f"[OK] 成功加载cookies (字典格式, {len(self.cookies)}个)")
             else:
                 print(f"[ERROR] cookies格式不正确: {type(loaded_cookies)}")
-                return False
-
-            # 检查关键cookies是否存在
-            required_cookies = ['UserToken', 'UserInfo', 'UserName']
-            missing_cookies = [cookie for cookie in required_cookies if cookie not in self.cookies]
-
-            if missing_cookies:
-                print(f"[WARN] 缺少关键cookies: {missing_cookies}，需要重新登录")
                 return False
 
             return True
@@ -578,9 +607,8 @@ class AuthService:
         Returns:
             bool: 是否已登录
         """
-        # 检查关键cookie是否存在
-        required_cookies = ['UserToken', 'UserInfo', 'UserName']
-        return all(cookie in self.cookies for cookie in required_cookies)
+        # 只要有cookies就认为可能已登录（不检查特定的key）
+        return len(self.cookies) > 0
 
     def verify_login(self) -> bool:
         """
@@ -589,9 +617,9 @@ class AuthService:
         Returns:
             bool: 登录状态是否有效
         """
-        # 首先检查关键cookies是否存在
+        # 首先检查是否有cookies
         if not self.is_logged_in():
-            print("[ERROR] 缺少关键cookies，登录状态无效")
+            print("[ERROR] 没有cookies，登录状态无效")
             return False
 
         try:
