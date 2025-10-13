@@ -1,6 +1,7 @@
 """
 CSDN文库文档下载服务
 专门处理wenku.csdn.net的文档下载和解锁
+仅使用cookies.json进行身份验证，不包含自动登录功能
 """
 import os
 import re
@@ -9,33 +10,34 @@ import requests
 import logging
 from datetime import datetime
 from bs4 import BeautifulSoup
-from html import unescape as html_unescape
 import markdown
-from markdown.extensions import fenced_code, codehilite
-from .auth_service import AuthService
-from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 class WenkuService:
-    """CSDN文库文档下载服务"""
+    """CSDN文库文档下载服务 - 基于cookies的简化版本"""
 
-    def __init__(self):
-        self.auth_service = AuthService(use_captcha_service=True, debug=False)
-        self.is_logged_in = False
+    def __init__(self, cookies_file: str = 'cookies.json'):
+        """
+        初始化文库服务
+
+        Args:
+            cookies_file: cookies文件路径，默认为 cookies.json
+        """
+        self.cookies_file = cookies_file
         self.session = None
 
-    def ensure_login(self):
-        """确保已登录CSDN账号"""
-        if self.is_logged_in and self.session:
+    def _load_session(self):
+        """从cookies文件加载session"""
+        if self.session:
             return
 
         # 初始化session
         self.session = requests.Session()
 
-        # 尝试加载cookies文件
+        # 加载cookies文件
         try:
-            with open('cookies.json', 'r', encoding='utf-8') as f:
+            with open(self.cookies_file, 'r', encoding='utf-8') as f:
                 cookies_dict = json.load(f)
 
             # 设置cookies到正确的域
@@ -44,8 +46,8 @@ class WenkuService:
 
             # 设置请求头
             self.session.headers.update({
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
                 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
                 'Accept-Encoding': 'gzip, deflate, br',
                 'Connection': 'keep-alive',
@@ -57,14 +59,13 @@ class WenkuService:
                 'Cache-Control': 'max-age=0'
             })
 
-            logger.info("✅ 成功加载cookies并初始化session")
-            self.is_logged_in = True
+            logger.info("成功加载cookies并初始化session")
 
         except FileNotFoundError:
-            logger.error("❌ cookies.json文件不存在")
-            raise Exception("cookies.json文件不存在，请先登录获取cookies")
+            logger.error(f"cookies文件不存在: {self.cookies_file}")
+            raise Exception(f"cookies文件不存在: {self.cookies_file}，请先手动获取cookies")
         except Exception as e:
-            logger.error(f"❌ 加载cookies失败: {str(e)}")
+            logger.error(f"加载cookies失败: {str(e)}")
             raise Exception(f"加载cookies失败: {str(e)}")
 
     def extract_wenku_id(self, url: str) -> str:
@@ -202,8 +203,8 @@ class WenkuService:
         logger.info(f"{'='*70}")
         logger.info(f"目标URL: {url}\n")
 
-        # 确保已登录
-        self.ensure_login()
+        # 加载session
+        self._load_session()
 
         # 提取文档ID
         try:
@@ -629,6 +630,7 @@ class WenkuService:
         return html_template
 
     def close(self):
-        """关闭服务"""
-        if self.auth_service:
-            self.auth_service.close()
+        """关闭服务，释放session资源"""
+        if self.session:
+            self.session.close()
+            self.session = None
