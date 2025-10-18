@@ -5,12 +5,12 @@ CSDN文库文档下载服务
 """
 import os
 import re
-import json
 import requests
 import logging
 from datetime import datetime
 from bs4 import BeautifulSoup
 import markdown
+from app.utils.cookie_parser import load_cookies
 
 logger = logging.getLogger(__name__)
 
@@ -35,14 +35,13 @@ class WenkuService:
         # 初始化session
         self.session = requests.Session()
 
-        # 加载cookies文件
+        # 使用 cookie_parser 加载cookies（自动识别格式）
         try:
-            with open(self.cookies_file, 'r', encoding='utf-8') as f:
-                cookies_dict = json.load(f)
+            cookies_dict = load_cookies(self.cookies_file)
 
             # 设置cookies到正确的域
             for name, value in cookies_dict.items():
-                self.session.cookies.set(name, value, domain='.csdn.net')
+                self.session.cookies.set(name, str(value), domain='.csdn.net')
 
             # 设置请求头
             self.session.headers.update({

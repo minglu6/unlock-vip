@@ -5,33 +5,27 @@
 [![Celery](https://img.shields.io/badge/Celery-5.4+-red.svg)](https://docs.celeryproject.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-一个基于 FastAPI + Celery 的 CSDN 文章智能下载服务，支持博客文章和文库文档的自动解析与下载。
+一个极简的 CSDN 文章下载服务，基于 FastAPI + Celery，支持博客文章和文库文档的自动解析与下载。
 
-> **⚡ 简化版本**：本项目已删繁就简，移除了自动登录、Playwright 等复杂功能，仅使用 cookies.json 进行认证，代码更简洁高效。
+> **⚡ 极简版本 v3.0**：移除了 API 认证、数据库、缓存等复杂功能，专注于核心下载能力，代码极简高效。
 
 ## ✨ 核心特性
 
 ### 🚀 异步处理
-- **Celery 任务队列** - 基于 Redis 的分布式任务处理
+- **Celery 任务队列** - 基于 Redis 的异步任务处理
 - **并发下载** - 支持同时处理多个下载请求
 - **任务状态追踪** - 实时查询任务进度和结果
 
 ### 📚 多格式支持
 - **博客文章** (`blog.csdn.net`) - 完整提取文章内容
 - **文库文档** (`wenku.csdn.net`) - Markdown 渲染 + 语法高亮
-- **VIP 解锁** - 自动检测并尝试解锁 VIP 文章
 - **格式保留** - 保持原文排版和样式
-
-### 🔐 安全认证
-- **API Key 认证** - 基于密钥的访问控制
-- **管理员系统** - 独立的管理员密钥管理
-- **请求日志** - 完整的 API 调用记录
-- **频率限制** - 支持分钟/小时/天级别的限流
+- **纯净输出** - 只保存文章核心内容
 
 ### 🧹 智能管理
 - **自动文件清理** - 定期清理旧的下载文件
 - **存储管理** - 自动删除过期文件释放空间
-- **纯净模式** - 只保存文章核心内容，去除广告
+- **无需认证** - 直接调用，简单快捷
 
 ## 🚀 快速开始
 
@@ -39,7 +33,6 @@
 
 - Python 3.9+
 - Redis 服务器
-- MySQL 数据库（可选，用于生产环境）
 
 ### 1. 安装依赖
 
@@ -58,99 +51,50 @@ pip install -r requirements.txt
 
 ### 2. 配置 Cookies
 
-**重要**：本项目使用 cookies.json 进行身份验证，需要手动获取 CSDN cookies。
+**重要**：本项目使用 cookies.json 进行 CSDN 身份验证，需要手动获取 CSDN cookies。
 
 ```bash
 # 复制模板文件
 cp cookies.json.example cookies.json
 ```
 
-然后编辑 `cookies.json`，填入从浏览器中获取的 CSDN cookies：
+编辑 `cookies.json`，填入从浏览器中获取的 CSDN cookies：
 
 1. 在浏览器中登录 CSDN
 2. 打开开发者工具（F12）
 3. 进入 Application/存储 -> Cookies
-4. 复制关键 cookie 值（UserToken, UserInfo 等）
+4. 复制关键 cookie 值（UserToken, UserInfo, dc_sid 等）
 5. 粘贴到 `cookies.json` 文件中
 
-`cookies.json` 格式示例：
-```json
-{
-  "UserToken": "your_token_here",
-  "UserInfo": "your_info_here",
-  "dc_sid": "your_sid_here"
-}
-```
-
-### 3. 配置环境变量
-
-```bash
-# 复制环境变量模板
-cp .env.example .env  # 如果没有 .env.example，手动创建 .env
-
-# 编辑 .env 文件
-nano .env
-```
-
-基本配置示例：
-```bash
-# Redis 配置
-REDIS_HOST=localhost
-REDIS_PORT=6379
-
-# 数据库配置（可选）
-DATABASE_URL=sqlite:///./unlock_vip.db
-
-# API 配置
-API_HOST=0.0.0.0
-API_PORT=8000
-```
-
-### 4. 生成 API Key
-
-```bash
-# 生成管理员 API Key
-python scripts/generate_admin_key.py
-
-# 生成普通测试 Key
-python scripts/generate_test_key.py
-```
-
-### 5. 启动服务
+### 3. 启动服务
 
 ```bash
 # 启动 Redis（如果未运行）
 redis-server
 
-# 启动 Celery Worker
+# 启动 Celery Worker（新终端）
 python celery_worker.py
 
 # 启动 FastAPI 服务（新终端）
 python run.py
 ```
 
-### 6. 测试接口
+### 4. 测试接口
 
-访问 `http://localhost:8000/docs` 查看 API 文档并测试。
+访问 `http://localhost:8000/docs` 查看 API 文档。
 
-或使用 curl：
+使用 curl 测试：
 ```bash
-curl -X POST "http://localhost:8000/api/download" \
-  -H "X-API-Key: your_api_key_here" \
+curl -X POST "http://localhost:8000/api/article/submit" \
   -H "Content-Type: application/json" \
   -d '{"url": "https://blog.csdn.net/..."}'
 ```
 
 ## 📖 API 文档
 
-### 下载文章
+### 1. 提交下载任务
 
-**端点**: `POST /api/download`
-
-**请求头**:
-```
-X-API-Key: your_api_key_here
-```
+**端点**: `POST /api/article/submit`
 
 **请求体**:
 ```json
@@ -163,35 +107,55 @@ X-API-Key: your_api_key_here
 ```json
 {
   "task_id": "abc-123-def",
-  "status": "pending",
-  "message": "任务已创建"
+  "status": "PENDING",
+  "message": "任务已成功提交，请使用任务ID轮询状态"
 }
 ```
 
-### 查询任务状态
+### 2. 查询任务状态
 
-**端点**: `GET /api/task/{task_id}`
+**端点**: `GET /api/article/task/{task_id}/status`
 
 **响应**:
 ```json
 {
   "task_id": "abc-123-def",
   "status": "SUCCESS",
+  "progress": 100,
   "result": {
-    "file_path": "/downloads/article.html",
-    "file_size": 12345,
-    "title": "文章标题"
-  }
+    "success": true,
+    "title": "文章标题",
+    "file_size": 12345
+  },
+  "error": null
 }
 ```
 
-### 下载文件
+### 3. 获取任务结果
+
+**端点**: `GET /api/article/task/{task_id}/result`
+
+**响应**:
+```json
+{
+  "task_id": "abc-123-def",
+  "success": true,
+  "content": "<html>...</html>",
+  "file_size": 12345,
+  "title": "文章标题",
+  "error": null
+}
+```
+
+### 4. 下载文件
 
 **端点**: `GET /api/file/{filename}`
 
 直接下载保存的文章文件。
 
 ## 🐳 Docker 部署
+
+### 开发环境
 
 ```bash
 # 使用 Docker Compose
@@ -204,9 +168,12 @@ docker-compose logs -f
 docker-compose down
 ```
 
-详细部署文档请参考：
-- [Docker 部署指南](docs/deployment/DOCKER_DEPLOYMENT.md)
-- [生产环境部署](docs/deployment/PRODUCTION_DEPLOY_README.md)
+### 生产环境
+
+```bash
+# 使用生产配置
+docker-compose -f docker-compose.prod.yml up -d
+```
 
 ## 📁 项目结构
 
@@ -214,21 +181,28 @@ docker-compose down
 unlock-vip/
 ├── app/                    # 应用核心代码
 │   ├── api/               # API 路由
-│   ├── services/          # 业务服务层（简化版）
+│   │   ├── article.py    # 文章下载接口
+│   │   └── file.py       # 文件下载接口
+│   ├── services/          # 业务服务层
+│   │   ├── article_service.py  # 博客文章服务
+│   │   ├── wenku_service.py    # 文库文档服务
+│   │   └── file_service.py     # 文件管理服务
 │   ├── tasks/             # Celery 任务
+│   │   ├── article_tasks.py    # 下载任务
+│   │   └── cleanup_tasks.py    # 清理任务
+│   ├── core/              # 核心配置
+│   │   ├── config.py     # 应用配置
+│   │   └── celery_app.py # Celery配置
 │   └── main.py            # FastAPI 入口
 ├── docs/                   # 文档
-│   ├── api/               # API 文档
-│   ├── deployment/        # 部署文档
 │   └── guides/            # 使用指南
-├── scripts/                # 实用脚本
 ├── tests/                  # 测试文件
 ├── userscripts/           # 浏览器用户脚本
-├── cookies.json.example   # Cookies 模板
+├── cookies.json           # CSDN Cookies
+├── docker-compose.yml     # 开发环境Docker配置
+├── docker-compose.prod.yml # 生产环境Docker配置
 └── requirements.txt       # Python 依赖
 ```
-
-详细结构说明：[PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)
 
 ## 🛠️ 开发指南
 
@@ -265,12 +239,10 @@ mypy app/
 
 ## 📚 文档索引
 
-- [API 认证指南](API_KEY_SETUP.md)
-- [项目结构说明](PROJECT_STRUCTURE.md)
-- [快速开始指南](docs/guides/QUICK_START.md)
-- [API 快速参考](docs/api/API_QUICK_REFERENCE.md)
-- [部署检查清单](docs/deployment/DEPLOYMENT_CHECKLIST.md)
-- [脚本使用说明](scripts/README.md)
+- [Claude 使用指南](CLAUDE.md) - Claude Code 使用说明
+- [文档中心](docs/README.md) - 完整文档索引
+- [脚本使用说明](scripts/README.md) - 实用脚本说明
+- [用户脚本指南](userscripts/README_USERSCRIPT.md) - 浏览器脚本使用
 
 ## 🔧 常见问题
 
@@ -282,49 +254,48 @@ Cookies 会定期失效，需要重新获取：
 3. 更新 `cookies.json` 文件
 4. 重启服务
 
-### 2. 如何处理 VIP 文章？
-
-项目会自动检测 VIP 文章并尝试解锁。如果您的账号没有 VIP 权限，解锁可能失败，此时会下载锁定状态的内容。
-
-### 3. Redis 连接失败？
+### 2. Redis 连接失败？
 
 确保 Redis 服务正在运行：
 ```bash
-# Linux/Mac
+# 启动 Redis
 redis-server
 
 # 检查状态
 redis-cli ping  # 应该返回 PONG
 ```
 
-### 4. 下载的文章在哪里？
+### 3. 下载的文章在哪里？
 
 文章默认保存在 `downloads/` 目录下，可以通过 API 下载或直接访问文件。
 
-## 🎯 简化说明
+## 🎯 极简版本说明
 
-**本版本已进行大幅简化**：
+**v3.0 极简版本特点**：
 
 ✅ **保留功能**：
 - FastAPI REST API
 - Celery 异步任务队列
 - 文章/文库下载
-- API Key 认证
 - 文件管理
+- Cookie 认证
 
 ❌ **移除功能**：
-- 自动登录（改为手动配置 cookies）
+- API Key 认证系统
+- MySQL/SQLite 数据库
+- Redis 结果缓存
+- 请求日志记录
+- 频率限制
+- 自动登录
 - Playwright 浏览器自动化
-- Selenium
-- playwright-stealth（已证实无效）
-- 验证码识别服务
 
 **优势**：
-- 代码量减少约 50%
-- 无需安装浏览器驱动
+- 代码量减少约 60%
+- 无需数据库
+- 部署超简单
 - 启动速度更快
 - 资源占用更少
-- 更易于维护
+- 维护成本低
 
 ## 🤝 贡献
 

@@ -1,39 +1,10 @@
 # 生产环境 Docker Compose 配置
-# 包含 Nginx 反向代理和 SSL 支持
-services:
-  # MySQL 数据库
-  mysql:
-    image: mysql:8.0
-    container_name: unlock-vip-mysql-prod
-    environment:
-      MYSQL_ROOT_PASSWORD: ${DATABASE_ROOT_PASSWORD}
-      MYSQL_DATABASE: ${DATABASE_NAME}
-      MYSQL_USER: ${DATABASE_USER}
-      MYSQL_PASSWORD: ${DATABASE_PASSWORD}
-      TZ: Asia/Shanghai
-    volumes:
-      - mysql_data:/var/lib/mysql
-      - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
-      - ./mysql-conf.d:/etc/mysql/conf.d:ro
-    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
-    restart: always
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DATABASE_ROOT_PASSWORD}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          cpus: '0.8'
-          memory: 1024M
-        reservations:
-          cpus: '0.4'
-          memory: 512M
-    networks:
-      - unlock-vip-network
+# 包含 Nginx 反向代理
 
-  # Redis 缓存
+version: '3.8'
+
+services:
+  # Redis (用于 Celery)
   redis:
     image: redis:7-alpine
     container_name: unlock-vip-redis-prod
@@ -59,49 +30,37 @@ services:
 
   # FastAPI Web 应用
   web:
-    build: 
+    build:
       context: .
       dockerfile: Dockerfile
     container_name: unlock-vip-api-prod
     environment:
-      - DATABASE_HOST=mysql
-      - DATABASE_PORT=3306
-      - DATABASE_USER=${DATABASE_USER}
-      - DATABASE_PASSWORD=${DATABASE_PASSWORD}
-      - DATABASE_NAME=${DATABASE_NAME}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_DB=0
       - REDIS_PASSWORD=${REDIS_PASSWORD}
-      - CSDN_USERNAME=${CSDN_USERNAME}
-      - CSDN_PASSWORD=${CSDN_PASSWORD}
-      - CAPTCHA_SERVICE=${CAPTCHA_SERVICE}
       - PORT=8000
-      - HOME=/app
     env_file:
       - .env.prod
     volumes:
       - ./downloads:/app/downloads
       - ./cookies.json:/app/cookies.json
-      - ./logs:/app/logs
     depends_on:
-      mysql:
-        condition: service_healthy
       redis:
         condition: service_healthy
     restart: always
-    command: ["sh", "-c", "python manage_db.py init && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1"]
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
+      start_period: 15s
     deploy:
       resources:
         limits:
           cpus: '0.5'
-          memory: 384M
+          memory: 512M
         reservations:
           cpus: '0.2'
           memory: 256M
@@ -115,66 +74,41 @@ services:
       dockerfile: Dockerfile
     container_name: unlock-vip-celery-prod
     environment:
-      - DATABASE_HOST=mysql
-      - DATABASE_PORT=3306
-      - DATABASE_USER=${DATABASE_USER}
-      - DATABASE_PASSWORD=${DATABASE_PASSWORD}
-      - DATABASE_NAME=${DATABASE_NAME}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_DB=0
       - REDIS_PASSWORD=${REDIS_PASSWORD}
-      - CSDN_USERNAME=${CSDN_USERNAME}
-      - CSDN_PASSWORD=${CSDN_PASSWORD}
-      - CAPTCHA_SERVICE=${CAPTCHA_SERVICE}
-      - PW_USER_DATA_DIR=/app/pw_profile
-      - PW_PERSIST_PROFILE=1
-      - PLAYWRIGHT_BLOCK_MEDIA_FONTS=0
-      - SCAN_OUTPUT_DIR=/tmp/scan
-      - HOME=/app
     env_file:
       - .env.prod
     volumes:
-      - ./app:/app/app 
       - ./downloads:/app/downloads
       - ./cookies.json:/app/cookies.json
-      - ./logs:/app/logs
-      - ./pw_profile:/app/pw_profile
-      # 扫码二维码输出目录（容器 -> 宿主机）
-      - /tmp/scan:/tmp/scan
     depends_on:
-      mysql:
-        condition: service_healthy
       redis:
         condition: service_healthy
     restart: always
-    # 并发维持为1，避免内存不足时浏览器启动失败
-    # Run Celery as default container user (root) to avoid permission issues on bind mounts (e.g., ./downloads on Windows)
-    command: celery -A app.core.celery_app worker --loglevel=info --concurrency=1 --pool=solo
+    command: celery -A app.core.celery_app worker --loglevel=info --concurrency=2 --pool=solo
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.core.celery_app inspect ping -d celery@$$HOSTNAME"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      start_period: 20s
     deploy:
       resources:
         limits:
-          cpus: '0.3'
-          # 将 Celery 内存上限提升到 1GB，以满足 Playwright/Chromium 登录峰值
-          memory: 1024M
-        reservations:
-          cpus: '0.1'
-          # 预留 512MB，降低因瞬时峰值导致的调度失败/卡死
+          cpus: '0.5'
           memory: 512M
+        reservations:
+          cpus: '0.2'
+          memory: 256M
     networks:
       - unlock-vip-network
-
 
   # Nginx 反向代理
   nginx:
     image: nginx:alpine
-    container_name: unlock-vip-nginx
+    container_name: unlock-vip-nginx-prod
     ports:
       - "80:80"
       - "443:443"
@@ -201,10 +135,7 @@ services:
     networks:
       - unlock-vip-network
 
-
 volumes:
-  mysql_data:
-    driver: local
   redis_data:
     driver: local
   nginx_logs:

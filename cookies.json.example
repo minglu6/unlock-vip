@@ -1,9 +1,28 @@
+# cookies.json 示例文件
+# 支持两种格式：
+
+# 格式1：JSON 格式（推荐）
+# 将下面的内容保存为 cookies.json，并替换为你的实际 cookie 值
 {
   "UserToken": "your_user_token_here",
   "UserInfo": "your_user_info_here",
   "dc_sid": "your_dc_sid_here",
   "Hm_lvt_6bcd52f51e9b3dce32bec4a3997715ac": "your_hmac_value_here",
-  "c_segment": "your_segment_here",
+  "c_segment": "0",
   "c_first_ref": "default",
   "c_first_page": "https://www.csdn.net/"
 }
+
+# 格式2：浏览器 Cookie 字符串格式（更简单）
+# 直接从浏览器开发者工具复制完整的 Cookie 字符串，粘贴到 cookies.json 文件即可
+# 例如：
+# uuid_tt_dd=10_37073029060-1744764649384-303632; fid=20_15857838147-1744764651083-624090; Hm_lvt_6bcd52f51e9b3dce32bec4a3997715ac=1756454268,1756794401,1756872706,1758008490; UserToken=e855a0078de04e8a93269109a0794a84; UserInfo=e855a0078de04e8a93269109a0794a84; dc_sid=bfc689c33b773308b03cce12a162486a
+
+# 获取 Cookie 的步骤：
+# 1. 在浏览器中登录 CSDN (https://www.csdn.net/)
+# 2. 按 F12 打开开发者工具
+# 3. 切换到 "Application" 或 "存储" 标签
+# 4. 左侧选择 "Cookies" -> "https://www.csdn.net"
+# 5. 方法A（推荐）：在控制台运行 document.cookie 复制完整字符串
+# 6. 方法B：手动复制关键 Cookie（UserToken, UserInfo, dc_sid 等）并组成 JSON 格式
+# 7. 将内容粘贴到 cookies.json 文件中

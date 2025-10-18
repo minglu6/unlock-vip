@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Unlock-VIP is a FastAPI-based service for downloading CSDN (Chinese Software Developer Network) articles and documents. It uses cookie-based authentication and Celery for asynchronous task processing.
+Unlock-VIP is a simplified FastAPI-based service for downloading CSDN (Chinese Software Developer Network) articles and documents. It uses cookie-based authentication for CSDN access and Celery for asynchronous task processing. The service has been optimized to remove API authentication and caching mechanisms for simplified operation.
 
 ## Essential Commands
 
@@ -15,13 +15,9 @@ python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-# Configure cookies (required for authentication)
+# Configure cookies (required for CSDN authentication)
 cp cookies.json.example cookies.json
 # Edit cookies.json with actual CSDN cookies
-
-# Generate API keys
-python scripts/generate_admin_key.py
-python scripts/generate_test_key.py
 ```
 
 ### Running the Application
@@ -60,18 +56,6 @@ flake8 app/
 mypy app/
 ```
 
-### Database Management
-```bash
-# Initialize database
-python scripts/manage_db.py init
-
-# Create migration
-python scripts/manage_db.py revision -m "description"
-
-# Apply migration
-python scripts/manage_db.py upgrade head
-```
-
 ## Architecture Overview
 
 ### Core Components
@@ -80,11 +64,7 @@ python scripts/manage_db.py upgrade head
 - Entry point with lifespan management
 - API documentation at `/docs`
 - Health check at `/health`
-
-**Authentication System** (`app/middleware/auth.py`)
-- API key-based authentication
-- Admin key vs regular key distinction
-- Request logging with rate limiting
+- No authentication required - simplified for direct use
 
 **Celery Task Queue** (`app/core/celery_app.py`)
 - Redis-backed task processing
@@ -96,29 +76,22 @@ python scripts/manage_db.py upgrade head
 - `wenku_service.py`: CSDN document processing with markdown rendering
 - `file_service.py`: File management and cleanup
 
-**Database Models** (`app/db/models.py`)
-- SQLAlchemy models for API keys, download tasks, and request logs
-- Supports SQLite (dev) and MySQL (prod)
-
 ### Key Design Patterns
 
-1. **Simplified Authentication**: Uses cookies.json instead of browser automation
+1. **CSDN Cookie Authentication**: Uses cookies.json for CSDN access (not API authentication)
 2. **Async Processing**: All downloads handled via Celery tasks
 3. **Service Layer**: Business logic separated from API endpoints
 4. **Task Status Polling**: Clients poll for download completion
 5. **Automatic Cleanup**: Scheduled tasks remove old files
+6. **No API Authentication**: Direct access without API keys for simplified operation
 
 ### API Endpoints
 
 **Article Operations**
-- `POST /api/download` - Create download task
-- `GET /api/task/{task_id}` - Check task status
+- `POST /api/article/submit` - Create download task (no auth required)
+- `GET /api/article/task/{task_id}/status` - Check task status
+- `GET /api/article/task/{task_id}/result` - Get task result with HTML content
 - `GET /api/file/{filename}` - Download completed file
-
-**Admin Operations**
-- `POST /api/admin/keys` - Create new API key
-- `GET /api/admin/keys` - List API keys
-- `DELETE /api/admin/keys/{key_id}` - Revoke API key
 
 ### Important Configuration Files
 
@@ -137,7 +110,6 @@ Userscripts in `userscripts/` provide browser integration:
 ### Testing Strategy
 
 Tests focus on:
-- Authentication system (`test_auth_system.py`)
 - Complete download flow (`test_complete_flow.py`)
 - Thread pool operations (`test_thread_pool.py`)
 - File cleanup (`test_cleanup.py`)
@@ -149,8 +121,7 @@ Tests focus on:
 1. Create service class in `app/services/`
 2. Add API endpoints in `app/api/`
 3. Create Celery tasks if needed in `app/tasks/`
-4. Add database models if required
-5. Write comprehensive tests
+4. Write comprehensive tests
 
 **Debugging Download Issues**
 1. Check cookies.json validity
@@ -160,15 +131,15 @@ Tests focus on:
 
 **Production Deployment**
 1. Use Docker Compose production configuration
-2. Configure SSL certificates
+2. Configure SSL certificates (optional)
 3. Set up monitoring with Flower
 4. Configure log rotation
-5. Set up database backups
 
 ### Key Technical Decisions
 
-1. **Cookie-based Auth**: Simplified from browser automation
+1. **Cookie-based CSDN Auth**: Uses cookies.json for CSDN access instead of browser automation
 2. **Async Downloads**: Celery handles all time-consuming operations
 3. **File Cleanup**: Automatic removal prevents storage issues
 4. **Multi-format Support**: Handles both blog articles and documents
-5. **API Key Management**: Separate admin and user keys with logging
+5. **No API Authentication**: Removed to simplify deployment and usage
+6. **No Result Caching**: Removed Redis caching for simplified architecture

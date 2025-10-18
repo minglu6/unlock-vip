@@ -1,5 +1,4 @@
-from fastapi import APIRouter, HTTPException, Request, Depends
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, HTTPException
 from app.models.schemas import (
     ArticleRequest, TaskStatusResponse,
     TaskSubmissionResponse, TaskResultResponse
@@ -7,45 +6,22 @@ from app.models.schemas import (
 from app.tasks.article_tasks import download_and_save_article
 from celery.result import AsyncResult
 from app.core.celery_app import celery_app
-from app.middleware.auth import verify_api_key, log_api_request
-from app.db.database import get_db
-from app.db.models import APIKey
-import time
 import uuid
-import redis
-import json
 from urllib.parse import urlparse
-from app.core.config import settings
 
 router = APIRouter()
 
 ALLOWED_CSDN_DOMAINS = ['blog.csdn.net', 'wenku.csdn.net']
 ALLOWED_SCHEMES = {'http', 'https'}
 
-# Redis 连接用于存储任务结果
-redis_client = redis.Redis(
-    host=settings.REDIS_HOST,
-    port=settings.REDIS_PORT,
-    db=settings.REDIS_DB,
-    decode_responses=True
-)
-
 @router.post("/submit", response_model=TaskSubmissionResponse)
-async def submit_download_task(
-    request_obj: Request,
-    request: ArticleRequest,
-    api_key: APIKey = Depends(verify_api_key),
-    db: Session = Depends(get_db)
-):
+async def submit_download_task(request: ArticleRequest):
     """
     提交文章下载任务
 
     返回一个UUID作为任务唯一标识符，后台使用Celery异步处理
     调用方需要轮询任务状态接口获取处理进度
-
-    需要在请求头中提供 X-API-Key 进行认证
     """
-    start_time = time.time()
     url = request.url
 
     # 验证URL
@@ -70,18 +46,7 @@ async def submit_download_task(
         is_valid_path = '/answer/' in parsed_url.path
 
     if not (is_valid_scheme and hostname and is_valid_host and is_valid_path):
-        processing_time_ms = int((time.time() - start_time) * 1000)
         error_detail = '请提供有效的CSDN博客文章或文库文档链接'
-        await log_api_request(
-            request=request_obj,
-            api_key=api_key,
-            db=db,
-            url=url,
-            status_code=400,
-            success=False,
-            error_message=error_detail,
-            processing_time=processing_time_ms
-        )
         raise HTTPException(status_code=400, detail=error_detail)
 
     try:
@@ -94,18 +59,6 @@ async def submit_download_task(
             task_id=task_id  # 使用生成的UUID作为任务ID
         )
 
-        # 记录成功提交日志
-        processing_time = int((time.time() - start_time) * 1000)
-        await log_api_request(
-            request=request_obj,
-            api_key=api_key,
-            db=db,
-            url=url,
-            status_code=200,
-            success=True,
-            processing_time=processing_time
-        )
-
         return TaskSubmissionResponse(
             task_id=task_id,
             status="PENDING",
@@ -113,27 +66,10 @@ async def submit_download_task(
         )
 
     except Exception as e:
-        processing_time = int((time.time() - start_time) * 1000)
-        await log_api_request(
-            request=request_obj,
-            api_key=api_key,
-            db=db,
-            url=url,
-            status_code=500,
-            success=False,
-            error_message=str(e),
-            processing_time=processing_time
-        )
-
         raise HTTPException(status_code=500, detail=f"任务提交失败: {str(e)}")
 
 @router.get("/task/{task_id}/status", response_model=TaskStatusResponse)
-async def get_task_status(
-    task_id: str,
-    request_obj: Request,
-    api_key: APIKey = Depends(verify_api_key),
-    db: Session = Depends(get_db)
-):
+async def get_task_status(task_id: str):
     """
     查询任务状态
 
@@ -170,9 +106,6 @@ async def get_task_status(
             )
         elif task_result.state == 'SUCCESS':
             result = task_result.result
-            # 存储结果到Redis，设置1天过期时间
-            redis_client.setex(f"task_result:{task_id}", 3600 * 24, json.dumps(result))
-
             return TaskStatusResponse(
                 task_id=task_id,
                 status='SUCCESS',
@@ -211,41 +144,18 @@ async def get_task_status(
         )
 
 @router.get("/task/{task_id}/result", response_model=TaskResultResponse)
-async def get_task_result(
-    task_id: str,
-    request_obj: Request,
-    api_key: APIKey = Depends(verify_api_key),
-    db: Session = Depends(get_db)
-):
+async def get_task_result(task_id: str):
     """
     获取任务结果（HTML内容）
 
     只有当任务状态为SUCCESS时才能获取到HTML内容
     """
     try:
-        # 首先尝试从Redis获取结果
-        redis_key = f"task_result:{task_id}"
-        cached_result = redis_client.get(redis_key)
-
-        if cached_result:
-            result = json.loads(cached_result)
-            return TaskResultResponse(
-                task_id=task_id,
-                success=result.get('success', False),
-                content=result.get('content'),
-                file_size=result.get('file_size'),
-                title=result.get('title'),
-                error=result.get('error')
-            )
-
-        # 如果Redis中没有，尝试从Celery获取
+        # 从Celery获取任务结果
         task_result = AsyncResult(task_id, app=celery_app)
 
         if task_result.state == 'SUCCESS':
             result = task_result.result
-            # 存储结果到Redis
-            redis_client.setex(redis_key, 3600*24, json.dumps(result))
-
             return TaskResultResponse(
                 task_id=task_id,
                 success=result.get('success', False),
