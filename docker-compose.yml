@@ -1,8 +1,7 @@
 services:
   unlock-vip:
+    build: .
     image: unlock-vip:latest
-    # 如果需要本地构建，取消下面这行的注释
-    # build: .
     container_name: unlock-vip
     expose:
       - "8001"
