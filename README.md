@@ -2,19 +2,19 @@
 
 [![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green.svg)](https://fastapi.tiangolo.com/)
-[![Celery](https://img.shields.io/badge/Celery-5.4+-red.svg)](https://docs.celeryproject.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-一个极简的 CSDN 文章下载服务，基于 FastAPI + Celery，支持博客文章和文库文档的自动解析与下载。
+一个极简的 CSDN 文章下载服务，基于 FastAPI + ThreadPoolExecutor，支持博客文章和文库文档的自动解析与下载。
 
-> **⚡ 极简版本 v3.0**：移除了 API 认证、数据库、缓存等复杂功能，专注于核心下载能力，代码极简高效。
+> **⚡ 精简版本 v4.0**：移除了 Celery、Redis、Docker 等复杂依赖，专注于核心下载能力，单进程运行，代码极简高效。
 
 ## ✨ 核心特性
 
 ### 🚀 异步处理
-- **Celery 任务队列** - 基于 Redis 的异步任务处理
+- **ThreadPoolExecutor** - 基于 Python 内置线程池的异步任务处理
 - **并发下载** - 支持同时处理多个下载请求
 - **任务状态追踪** - 实时查询任务进度和结果
+- **内存存储** - 任务状态存储在内存中，无需外部依赖
 
 ### 📚 多格式支持
 - **博客文章** (`blog.csdn.net`) - 完整提取文章内容
@@ -22,9 +22,10 @@
 - **格式保留** - 保持原文排版和样式
 - **纯净输出** - 只保存文章核心内容
 
-### 🧹 智能管理
-- **自动文件清理** - 定期清理旧的下载文件
-- **存储管理** - 自动删除过期文件释放空间
+### 🧹 极简架构
+- **单进程运行** - 无需额外的 worker 进程
+- **无外部依赖** - 无需 Redis、MySQL 等服务
+- **即开即用** - 一条命令启动服务
 - **无需认证** - 直接调用，简单快捷
 
 ## 🚀 快速开始
@@ -32,7 +33,6 @@
 ### 前置要求
 
 - Python 3.9+
-- Redis 服务器
 
 ### 1. 安装依赖
 
@@ -69,14 +69,11 @@ cp cookies.json.example cookies.json
 ### 3. 启动服务
 
 ```bash
-# 启动 Redis（如果未运行）
-redis-server
-
-# 启动 Celery Worker（新终端）
-python celery_worker.py
-
-# 启动 FastAPI 服务（新终端）
+# 启动 FastAPI 服务（单进程）
 python run.py
+
+# 或使用 uvicorn
+uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 ### 4. 测试接口
@@ -153,28 +150,6 @@ curl -X POST "http://localhost:8000/api/article/submit" \
 
 直接下载保存的文章文件。
 
-## 🐳 Docker 部署
-
-### 开发环境
-
-```bash
-# 使用 Docker Compose
-docker-compose up -d
-
-# 查看日志
-docker-compose logs -f
-
-# 停止服务
-docker-compose down
-```
-
-### 生产环境
-
-```bash
-# 使用生产配置
-docker-compose -f docker-compose.prod.yml up -d
-```
-
 ## 📁 项目结构
 
 ```
@@ -186,21 +161,16 @@ unlock-vip/
 │   ├── services/          # 业务服务层
 │   │   ├── article_service.py  # 博客文章服务
 │   │   ├── wenku_service.py    # 文库文档服务
-│   │   └── file_service.py     # 文件管理服务
-│   ├── tasks/             # Celery 任务
-│   │   ├── article_tasks.py    # 下载任务
-│   │   └── cleanup_tasks.py    # 清理任务
+│   │   └── file_service.py     # 文件管理和线程池
+│   ├── models/            # 数据模型
+│   │   └── schemas.py    # Pydantic 模型
 │   ├── core/              # 核心配置
-│   │   ├── config.py     # 应用配置
-│   │   └── celery_app.py # Celery配置
+│   │   └── config.py     # 应用配置
 │   └── main.py            # FastAPI 入口
-├── docs/                   # 文档
-│   └── guides/            # 使用指南
 ├── tests/                  # 测试文件
 ├── userscripts/           # 浏览器用户脚本
 ├── cookies.json           # CSDN Cookies
-├── docker-compose.yml     # 开发环境Docker配置
-├── docker-compose.prod.yml # 生产环境Docker配置
+├── .env                   # 环境配置
 └── requirements.txt       # Python 依赖
 ```
 
@@ -213,7 +183,7 @@ unlock-vip/
 pytest
 
 # 运行特定测试
-pytest tests/test_article_service.py
+pytest tests/test_thread_pool.py
 
 # 查看覆盖率
 pytest --cov=app tests/
@@ -240,8 +210,6 @@ mypy app/
 ## 📚 文档索引
 
 - [Claude 使用指南](CLAUDE.md) - Claude Code 使用说明
-- [文档中心](docs/README.md) - 完整文档索引
-- [脚本使用说明](scripts/README.md) - 实用脚本说明
 - [用户脚本指南](userscripts/README_USERSCRIPT.md) - 浏览器脚本使用
 
 ## 🔧 常见问题
@@ -254,48 +222,46 @@ Cookies 会定期失效，需要重新获取：
 3. 更新 `cookies.json` 文件
 4. 重启服务
 
-### 2. Redis 连接失败？
-
-确保 Redis 服务正在运行：
-```bash
-# 启动 Redis
-redis-server
-
-# 检查状态
-redis-cli ping  # 应该返回 PONG
-```
-
-### 3. 下载的文章在哪里？
+### 2. 下载的文章在哪里？
 
 文章默认保存在 `downloads/` 目录下，可以通过 API 下载或直接访问文件。
 
-## 🎯 极简版本说明
+### 3. 如何调整并发数？
 
-**v3.0 极简版本特点**：
+在 `.env` 文件中设置：
+```
+THREAD_POOL_WORKERS=4  # 默认 4 个工作线程
+```
+
+## 🎯 精简版本说明
+
+**v4.0 精简版本特点**：
 
 ✅ **保留功能**：
 - FastAPI REST API
-- Celery 异步任务队列
+- ThreadPoolExecutor 异步任务
 - 文章/文库下载
 - 文件管理
 - Cookie 认证
 
 ❌ **移除功能**：
-- API Key 认证系统
+- Celery + Redis
+- Docker 配置
 - MySQL/SQLite 数据库
-- Redis 结果缓存
+- API Key 认证系统
 - 请求日志记录
 - 频率限制
 - 自动登录
 - Playwright 浏览器自动化
 
 **优势**：
-- 代码量减少约 60%
-- 无需数据库
-- 部署超简单
-- 启动速度更快
-- 资源占用更少
+- 代码量减少约 70%
+- 无需任何外部服务（Redis、MySQL）
+- 部署极其简单（一条命令）
+- 启动速度快
+- 资源占用极少
 - 维护成本低
+- 单进程运行
 
 ## 🤝 贡献
 
@@ -314,7 +280,6 @@ redis-cli ping  # 应该返回 PONG
 ## 🙏 致谢
 
 - [FastAPI](https://fastapi.tiangolo.com/) - 现代 Python Web 框架
-- [Celery](https://docs.celeryproject.org/) - 分布式任务队列
 - [BeautifulSoup](https://www.crummy.com/software/BeautifulSoup/) - HTML 解析
 
 ## ⚠️ 免责声明

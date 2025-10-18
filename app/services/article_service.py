@@ -5,6 +5,7 @@ CSDN文章下载服务
 """
 import os
 import re
+import json
 import requests
 import logging
 from datetime import datetime
@@ -206,7 +207,7 @@ class ArticleService:
 
     def download_article(self, url: str) -> dict:
         """
-        下载CSDN文章HTML - 支持VIP文章解锁检测
+        下载CSDN文章HTML - 默认先尝试解锁VIP文章
 
         Args:
             url: 文章URL
@@ -223,6 +224,11 @@ class ArticleService:
             logger.error(f"提取文章ID失败: {str(e)}")
             article_id = None
 
+        # 对于博客文章，直接先尝试解锁（无需检测是否锁定）
+        if article_id and 'blog.csdn.net' in url:
+            logger.info("博客文章，先尝试解锁VIP")
+            self.unlock_vip_article(article_id)
+
         try:
             logger.info(f"正在下载文章页面: {url}")
             response = self.session.get(url, timeout=30, verify=False)
@@ -232,19 +238,6 @@ class ArticleService:
                 raise requests.exceptions.HTTPError(f"HTTP {response.status_code}")
 
             full_html = response.text
-
-            # 检查是否为VIP锁定文章
-            is_locked = self.is_vip_article_locked(full_html, url)
-
-            if is_locked and article_id:
-                logger.warning("检测到VIP锁定标识，尝试解锁")
-                unlock_success = self.unlock_vip_article(article_id)
-
-                if unlock_success:
-                    logger.info("VIP解锁成功，重新下载文章内容")
-                    response = self.session.get(url, timeout=30, verify=False)
-                    full_html = response.text
-                    is_locked = self.is_vip_article_locked(full_html, url)
 
             # 解析HTML
             soup = BeautifulSoup(full_html, 'html.parser')
@@ -313,8 +306,7 @@ class ArticleService:
                 "url": url,
                 "title": title,
                 "html": full_html,
-                "content": article_content,
-                "is_vip_locked": is_locked and article_id
+                "content": article_content
             }
 
         except requests.exceptions.Timeout:

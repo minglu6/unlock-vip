@@ -1,26 +1,28 @@
 from fastapi import APIRouter, HTTPException
-from app.models.schemas import (
-    ArticleRequest, TaskStatusResponse,
-    TaskSubmissionResponse, TaskResultResponse
-)
-from app.tasks.article_tasks import download_and_save_article
-from celery.result import AsyncResult
-from app.core.celery_app import celery_app
-import uuid
+from app.models.schemas import ArticleRequest, ArticleResponse
+from app.services.article_service import ArticleService
 from urllib.parse import urlparse
+import logging
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 ALLOWED_CSDN_DOMAINS = ['blog.csdn.net', 'wenku.csdn.net']
 ALLOWED_SCHEMES = {'http', 'https'}
 
-@router.post("/submit", response_model=TaskSubmissionResponse)
-async def submit_download_task(request: ArticleRequest):
-    """
-    提交文章下载任务
 
-    返回一个UUID作为任务唯一标识符，后台使用Celery异步处理
-    调用方需要轮询任务状态接口获取处理进度
+@router.post("/download", response_model=ArticleResponse)
+async def download_article(request: ArticleRequest):
+    """
+    下载CSDN文章/文档（同步接口）
+
+    直接返回HTML内容，不使用异步任务队列
+
+    Args:
+        request: 包含url的请求对象
+
+    Returns:
+        ArticleResponse: 包含HTML内容、标题、文件大小等信息
     """
     url = request.url
 
@@ -50,141 +52,41 @@ async def submit_download_task(request: ArticleRequest):
         raise HTTPException(status_code=400, detail=error_detail)
 
     try:
-        # 生成UUID作为任务ID
-        task_id = str(uuid.uuid4())
+        logger.info(f"开始下载文章: {url}")
 
-        # 提交异步任务到Celery
-        download_and_save_article.apply_async(
-            args=[url],
-            task_id=task_id  # 使用生成的UUID作为任务ID
+        # 创建文章服务实例
+        article_service = ArticleService()
+
+        # 下载文章
+        article_data = article_service.download_article(url)
+
+        # 提取纯净内容
+        clean_html = article_service.extract_clean_content(
+            article_data['html'],
+            article_data.get('title', '未知标题'),
+            url
         )
 
-        return TaskSubmissionResponse(
-            task_id=task_id,
-            status="PENDING",
-            message="任务已成功提交，请使用任务ID轮询状态"
+        # 清理资源
+        article_service.close()
+
+        logger.info(f"文章下载成功: {article_data.get('title')}")
+
+        return ArticleResponse(
+            success=True,
+            content=clean_html,
+            file_size=len(clean_html.encode('utf-8')),
+            title=article_data.get('title'),
+            error=None
         )
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"任务提交失败: {str(e)}")
-
-@router.get("/task/{task_id}/status", response_model=TaskStatusResponse)
-async def get_task_status(task_id: str):
-    """
-    查询任务状态
-
-    状态说明：
-    - PENDING: 任务等待中
-    - PROCESSING: 任务处理中
-    - SUCCESS: 任务成功
-    - FAILURE: 任务失败
-    """
-    try:
-        task_result = AsyncResult(task_id, app=celery_app)
-
-        # 获取进度信息（如果任务支持）
-        progress = None
-        if hasattr(task_result, 'info') and task_result.info:
-            if isinstance(task_result.info, dict) and 'progress' in task_result.info:
-                progress = task_result.info['progress']
-
-        if task_result.state == 'PENDING':
-            return TaskStatusResponse(
-                task_id=task_id,
-                status='PENDING',
-                progress=progress,
-                result=None,
-                error=None
-            )
-        elif task_result.state == 'PROCESSING':
-            return TaskStatusResponse(
-                task_id=task_id,
-                status='PROCESSING',
-                progress=progress,
-                result=task_result.info if isinstance(task_result.info, dict) else None,
-                error=None
-            )
-        elif task_result.state == 'SUCCESS':
-            result = task_result.result
-            return TaskStatusResponse(
-                task_id=task_id,
-                status='SUCCESS',
-                progress=100,
-                result={
-                    'success': result.get('success', False),
-                    'title': result.get('title'),
-                    'file_size': result.get('file_size')
-                },
-                error=None
-            )
-        elif task_result.state == 'FAILURE':
-            return TaskStatusResponse(
-                task_id=task_id,
-                status='FAILURE',
-                progress=0,
-                result=None,
-                error=str(task_result.info) if task_result.info else "任务执行失败"
-            )
-        else:
-            return TaskStatusResponse(
-                task_id=task_id,
-                status=task_result.state,
-                progress=progress,
-                result=task_result.info if isinstance(task_result.info, dict) else None,
-                error=None
-            )
-
-    except Exception as e:
-        return TaskStatusResponse(
-            task_id=task_id,
-            status='ERROR',
-            progress=0,
-            result=None,
+        logger.error(f"下载文章失败: {str(e)}")
+        article_service.close()
+        return ArticleResponse(
+            success=False,
+            content=None,
+            file_size=None,
+            title=None,
             error=str(e)
         )
-
-@router.get("/task/{task_id}/result", response_model=TaskResultResponse)
-async def get_task_result(task_id: str):
-    """
-    获取任务结果（HTML内容）
-
-    只有当任务状态为SUCCESS时才能获取到HTML内容
-    """
-    try:
-        # 从Celery获取任务结果
-        task_result = AsyncResult(task_id, app=celery_app)
-
-        if task_result.state == 'SUCCESS':
-            result = task_result.result
-            return TaskResultResponse(
-                task_id=task_id,
-                success=result.get('success', False),
-                content=result.get('content'),
-                file_size=result.get('file_size'),
-                title=result.get('title'),
-                error=result.get('error')
-            )
-        elif task_result.state == 'PENDING':
-            raise HTTPException(status_code=425, detail="任务尚未完成，请稍后重试")
-        elif task_result.state == 'PROCESSING':
-            raise HTTPException(status_code=425, detail="任务处理中，请稍后重试")
-        elif task_result.state == 'FAILURE':
-            error_msg = str(task_result.info) if task_result.info else "任务执行失败"
-            return TaskResultResponse(
-                task_id=task_id,
-                success=False,
-                content=None,
-                file_size=None,
-                title=None,
-                error=error_msg
-            )
-        else:
-            raise HTTPException(status_code=425, detail=f"任务状态: {task_result.state}")
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取任务结果失败: {str(e)}")
-
-# 已移除同步下载接口，只支持异步处理以提高并发性能
-# 使用 POST /submit + GET /task/{task_id}/status + GET /task/{task_id}/result
