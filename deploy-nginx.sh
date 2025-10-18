@@ -25,6 +25,18 @@ if ! command -v docker &> /dev/null; then
     exit 1
 fi
 
+# 检测使用 docker compose 还是 docker-compose
+if docker compose version &> /dev/null; then
+    DOCKER_COMPOSE="docker compose"
+    echo "使用 docker compose (v2)"
+elif command -v docker-compose &> /dev/null; then
+    DOCKER_COMPOSE="docker-compose"
+    echo "使用 docker-compose (v1)"
+else
+    echo -e "${RED}错误: 未安装 Docker Compose${NC}"
+    exit 1
+fi
+
 echo -e "${GREEN}[2/6] 检查 cookies.json...${NC}"
 if [ ! -f "cookies.json" ]; then
     echo -e "${RED}错误: cookies.json 文件不存在${NC}"
@@ -37,10 +49,10 @@ mkdir -p nginx/logs
 mkdir -p downloads
 
 echo -e "${GREEN}[4/6] 停止旧容器（如果存在）...${NC}"
-docker compose down 2>/dev/null || true
+$DOCKER_COMPOSE down 2>/dev/null || true
 
 echo -e "${GREEN}[5/6] 构建并启动服务...${NC}"
-docker compose up -d --build
+$DOCKER_COMPOSE up -d --build
 
 echo -e "${GREEN}[6/6] 等待服务启动...${NC}"
 sleep 5
@@ -48,7 +60,7 @@ sleep 5
 # 检查服务状态
 echo ""
 echo "容器状态:"
-docker compose ps
+$DOCKER_COMPOSE ps
 
 echo ""
 echo -e "${GREEN}========================================"
@@ -61,11 +73,11 @@ echo "  - API文档: http://175.24.164.85/docs"
 echo "  - 健康检查: http://175.24.164.85/health"
 echo ""
 echo "常用命令:"
-echo "  - 查看日志: docker compose logs -f"
-echo "  - 查看应用日志: docker compose logs -f unlock-vip"
-echo "  - 查看Nginx日志: docker compose logs -f nginx"
-echo "  - 重启服务: docker compose restart"
-echo "  - 停止服务: docker compose down"
+echo "  - 查看日志: $DOCKER_COMPOSE logs -f"
+echo "  - 查看应用日志: $DOCKER_COMPOSE logs -f unlock-vip"
+echo "  - 查看Nginx日志: $DOCKER_COMPOSE logs -f nginx"
+echo "  - 重启服务: $DOCKER_COMPOSE restart"
+echo "  - 停止服务: $DOCKER_COMPOSE down"
 echo ""
 echo "Nginx 日志位置:"
 echo "  - 访问日志: ./nginx/logs/unlock-vip-access.log"
