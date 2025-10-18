@@ -2,63 +2,57 @@
 // @name         CSDN Helper
 // @namespace    https://github.com/minglu6/unlock-vip
 // @version      1.0.0
-// @description  CSDN 全能助手 - 支持VIP文章/文库解锁、资源下载直链获取，基于自托管API服务
+// @description  CSDN 全能助手 - 支持VIP文章/文库解锁、资源下载直链获取
 // @author       minglu6
 // @match        https://blog.csdn.net/*/article/details/*
 // @match        https://*.blog.csdn.net/article/details/*
 // @match        https://wenku.csdn.net/answer/*
 // @match        https://download.csdn.net/download/*/*
 // @grant        GM_xmlhttpRequest
-// @grant        GM_setValue
-// @grant        GM_getValue
 // @icon         https://g.csdnimg.cn/static/logo/favicon32.ico
 // @connect      175.24.164.85
+// @license      MIT
 // @run-at       document-end
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    // ========== 配置 ==========
     const CONFIG = {
-        // API服务器地址
         apiBaseUrl: 'http://175.24.164.85/api',
-
-        // API密钥（请在浏览器控制台执行：GM_setValue('csdn_api_key', '你的密钥')）
-        // 或者直接在这里填写
-        apiKey: GM_getValue('csdn_api_key', ''),
-
-        // 轮询配置
-        pollIntervalMs: 2000,      // 轮询间隔（毫秒）
-        pollTimeoutMs: 180000,     // 轮询超时（3分钟）
-
-        // 显示配置
-        enableLog: true,           // 是否显示日志面板
-        preferPreview: true,       // 优先内嵌预览（false则新标签打开）
+        requestTimeout: 60000,
+        enableLog: false,
+        preferPreview: true,
     };
 
-    // ========== API客户端 ==========
     class APIClient {
-        constructor(baseUrl, apiKey) {
+        constructor(baseUrl) {
             this.baseUrl = baseUrl;
-            this.apiKey = apiKey;
         }
 
         async request(endpoint, options = {}) {
             const url = `${this.baseUrl}${endpoint}`;
+            const method = options.method || 'GET';
             const headers = {
                 'Content-Type': 'application/json',
-                'X-API-Key': this.apiKey,
                 ...options.headers
             };
+            const data = options.body ? JSON.stringify(options.body) : undefined;
+
+            console.log('[CSDN Helper API] 请求参数:', {
+                method: method,
+                url: url,
+                headers: headers,
+                data: data
+            });
 
             return new Promise((resolve, reject) => {
                 GM_xmlhttpRequest({
-                    method: options.method || 'GET',
+                    method: method,
                     url: url,
                     headers: headers,
-                    data: options.body ? JSON.stringify(options.body) : undefined,
-                    timeout: options.timeout || 30000,
+                    data: data,
+                    timeout: options.timeout || CONFIG.requestTimeout,
                     onload: (response) => {
                         try {
                             if (response.status >= 200 && response.status < 300) {
@@ -78,25 +72,14 @@
             });
         }
 
-        // 提交文章下载任务
-        async submitArticleTask(url) {
-            return await this.request('/article/submit', {
+        async downloadArticle(url) {
+            return await this.request('/article/download', {
                 method: 'POST',
-                body: { url }
+                body: { url },
+                timeout: CONFIG.requestTimeout
             });
         }
 
-        // 查询任务状态
-        async getTaskStatus(taskId) {
-            return await this.request(`/article/task/${taskId}/status`);
-        }
-
-        // 获取任务结果
-        async getTaskResult(taskId) {
-            return await this.request(`/article/task/${taskId}/result`);
-        }
-
-        // 获取文件下载链接
         async getDownloadLink(url) {
             return await this.request('/file/get-download-link', {
                 method: 'POST',
@@ -105,7 +88,6 @@
         }
     }
 
-    // ========== 日志面板 ==========
     class LogPanel {
         constructor() {
             this.panel = null;
@@ -116,7 +98,6 @@
         }
 
         init() {
-            // 创建面板容器
             this.panel = document.createElement('div');
             this.panel.id = 'csdn-unlock-log-panel';
             this.panel.style.cssText = `
@@ -135,7 +116,6 @@
                 font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif !important;
             `;
 
-            // 标题栏
             const header = document.createElement('div');
             header.style.cssText = `
                 display: flex !important;
@@ -168,7 +148,6 @@
             header.appendChild(title);
             header.appendChild(clearBtn);
 
-            // 日志列表
             this.logList = document.createElement('div');
             this.logList.style.cssText = `
                 padding: 12px !important;
@@ -205,7 +184,6 @@
 
             this.logList.appendChild(line);
 
-            // 限制日志数量
             while (this.logList.childNodes.length > 100) {
                 this.logList.removeChild(this.logList.firstChild);
             }
@@ -220,213 +198,6 @@
         }
     }
 
-    // ========== API密钥配置面板 ==========
-    class ApiKeyDialog {
-        constructor() {
-            this.overlay = null;
-            this.init();
-        }
-
-        init() {
-            // 创建遮罩层
-            this.overlay = document.createElement('div');
-            this.overlay.style.cssText = `
-                position: fixed !important;
-                inset: 0 !important;
-                background: rgba(0, 0, 0, 0.85) !important;
-                z-index: 2147483647 !important;
-                display: none !important;
-                align-items: center !important;
-                justify-content: center !important;
-                padding: 20px !important;
-            `;
-
-            // 对话框容器
-            const dialog = document.createElement('div');
-            dialog.style.cssText = `
-                background: #1a1a1a !important;
-                border-radius: 12px !important;
-                box-shadow: 0 8px 40px rgba(0,0,0,0.5) !important;
-                width: min(500px, 90vw) !important;
-                overflow: hidden !important;
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif !important;
-            `;
-
-            // 标题栏
-            const header = document.createElement('div');
-            header.style.cssText = `
-                padding: 20px !important;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
-                color: #fff !important;
-                text-align: center !important;
-            `;
-            header.innerHTML = `
-                <div style="font-size: 32px; margin-bottom: 8px;">🔑</div>
-                <h2 style="margin: 0; font-size: 20px; font-weight: 600;">配置API密钥</h2>
-            `;
-
-            // 内容区域
-            const content = document.createElement('div');
-            content.style.cssText = `
-                padding: 30px !important;
-                color: #e0e0e0 !important;
-            `;
-
-            const description = document.createElement('p');
-            description.style.cssText = `
-                margin: 0 0 20px 0 !important;
-                font-size: 14px !important;
-                line-height: 1.6 !important;
-                color: #b0b0b0 !important;
-            `;
-            description.textContent = '首次使用需要配置API密钥，请输入您的密钥以继续：';
-
-            // 输入框
-            const inputWrapper = document.createElement('div');
-            inputWrapper.style.cssText = 'margin-bottom: 20px !important;';
-
-            const input = document.createElement('input');
-            input.type = 'text';
-            input.placeholder = '请输入API密钥';
-            input.style.cssText = `
-                width: 100% !important;
-                padding: 12px 16px !important;
-                background: #2a2a2a !important;
-                border: 2px solid #3a3a3a !important;
-                border-radius: 8px !important;
-                color: #fff !important;
-                font-size: 14px !important;
-                box-sizing: border-box !important;
-                transition: border-color 0.3s ease !important;
-            `;
-            input.onfocus = () => input.style.borderColor = '#667eea';
-            input.onblur = () => input.style.borderColor = '#3a3a3a';
-
-            // 提示信息
-            const hint = document.createElement('div');
-            hint.style.cssText = `
-                margin-top: 15px !important;
-                padding: 12px !important;
-                background: rgba(102, 126, 234, 0.1) !important;
-                border-left: 3px solid #667eea !important;
-                border-radius: 4px !important;
-                font-size: 12px !important;
-                line-height: 1.5 !important;
-                color: #a0a0a0 !important;
-            `;
-            hint.innerHTML = `
-                <strong style="color: #667eea;">💡 提示：</strong><br>
-                • 密钥将安全保存在浏览器本地存储中<br>
-                • 如需修改，可以在控制台执行：<br>
-                <code style="background: #2a2a2a; padding: 2px 6px; border-radius: 3px; color: #8cc8ff;">GM_setValue('csdn_api_key', '新密钥')</code>
-            `;
-
-            inputWrapper.appendChild(input);
-            content.appendChild(description);
-            content.appendChild(inputWrapper);
-            content.appendChild(hint);
-
-            // 按钮区域
-            const footer = document.createElement('div');
-            footer.style.cssText = `
-                padding: 0 30px 30px 30px !important;
-                display: flex !important;
-                gap: 12px !important;
-            `;
-
-            const cancelBtn = document.createElement('button');
-            cancelBtn.textContent = '取消';
-            cancelBtn.style.cssText = `
-                flex: 1 !important;
-                padding: 12px !important;
-                background: #3a3a3a !important;
-                color: #e0e0e0 !important;
-                border: none !important;
-                border-radius: 8px !important;
-                cursor: pointer !important;
-                font-size: 14px !important;
-                font-weight: 500 !important;
-                transition: all 0.3s ease !important;
-            `;
-            cancelBtn.onmouseover = () => cancelBtn.style.background = '#4a4a4a';
-            cancelBtn.onmouseout = () => cancelBtn.style.background = '#3a3a3a';
-            cancelBtn.onclick = () => this.hide();
-
-            const confirmBtn = document.createElement('button');
-            confirmBtn.textContent = '确定';
-            confirmBtn.style.cssText = `
-                flex: 2 !important;
-                padding: 12px !important;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
-                color: #fff !important;
-                border: none !important;
-                border-radius: 8px !important;
-                cursor: pointer !important;
-                font-size: 14px !important;
-                font-weight: 500 !important;
-                transition: all 0.3s ease !important;
-            `;
-            confirmBtn.onmouseover = () => confirmBtn.style.transform = 'translateY(-2px)';
-            confirmBtn.onmouseout = () => confirmBtn.style.transform = 'translateY(0)';
-
-            // 确认按钮点击事件
-            confirmBtn.onclick = () => {
-                const apiKey = input.value.trim();
-                if (!apiKey) {
-                    alert('请输入API密钥！');
-                    input.focus();
-                    return;
-                }
-                this.saveApiKey(apiKey);
-            };
-
-            // 支持回车提交
-            input.onkeypress = (e) => {
-                if (e.key === 'Enter') {
-                    confirmBtn.click();
-                }
-            };
-
-            footer.appendChild(cancelBtn);
-            footer.appendChild(confirmBtn);
-
-            dialog.appendChild(header);
-            dialog.appendChild(content);
-            dialog.appendChild(footer);
-            this.overlay.appendChild(dialog);
-            document.documentElement.appendChild(this.overlay);
-
-            this.input = input;
-        }
-
-        show() {
-            this.overlay.style.display = 'flex';
-            // 延迟聚焦，确保显示后再聚焦
-            setTimeout(() => this.input.focus(), 100);
-        }
-
-        hide() {
-            this.overlay.style.display = 'none';
-            this.input.value = '';
-        }
-
-        saveApiKey(apiKey) {
-            try {
-                GM_setValue('csdn_api_key', apiKey);
-                this.hide();
-
-                // 显示成功提示
-                alert('API密钥配置成功！\n页面将刷新以应用新配置。');
-
-                // 刷新页面以应用新密钥
-                window.location.reload();
-            } catch (error) {
-                alert(`保存失败：${error.message}`);
-            }
-        }
-    }
-
-    // ========== 结果展示面板 ==========
     class ResultPanel {
         constructor() {
             this.overlay = null;
@@ -435,7 +206,6 @@
         }
 
         init() {
-            // 创建遮罩层
             this.overlay = document.createElement('div');
             this.overlay.style.cssText = `
                 position: fixed !important;
@@ -448,7 +218,6 @@
                 padding: 40px !important;
             `;
 
-            // 内容容器
             const container = document.createElement('div');
             container.style.cssText = `
                 width: min(1200px, 95vw) !important;
@@ -461,7 +230,6 @@
                 box-shadow: 0 8px 40px rgba(0,0,0,0.5) !important;
             `;
 
-            // 标题栏
             const header = document.createElement('div');
             header.style.cssText = `
                 display: flex !important;
@@ -509,7 +277,6 @@
             header.appendChild(title);
             header.appendChild(actions);
 
-            // iframe容器
             this.iframe = document.createElement('iframe');
             this.iframe.style.cssText = `
                 flex: 1 !important;
@@ -528,16 +295,13 @@
 
         show(content, title = '解锁成功') {
             if (CONFIG.preferPreview) {
-                // 内嵌预览
                 this.iframe.srcdoc = content;
                 this.overlay.style.display = 'flex';
 
-                // 创建Blob URL用于新标签打开
                 const blob = new Blob([content], { type: 'text/html' });
                 const blobUrl = URL.createObjectURL(blob);
                 this.openNewTabLink.href = blobUrl;
             } else {
-                // 直接新标签打开
                 const blob = new Blob([content], { type: 'text/html' });
                 const blobUrl = URL.createObjectURL(blob);
                 window.open(blobUrl, '_blank');
@@ -550,10 +314,9 @@
         }
     }
 
-    // ========== 主控制器 ==========
     class UnlockController {
         constructor() {
-            this.apiClient = new APIClient(CONFIG.apiBaseUrl, CONFIG.apiKey);
+            this.apiClient = new APIClient(CONFIG.apiBaseUrl);
             this.logger = new LogPanel();
             this.resultPanel = new ResultPanel();
         }
@@ -561,67 +324,22 @@
         async unlockArticle(url) {
             try {
                 this.logger.log(`开始解锁: ${url}`, 'info');
+                this.logger.log('正在下载文章...', 'info');
 
-                // 1. 提交任务
-                this.logger.log('正在提交任务...', 'info');
-                const submitResult = await this.apiClient.submitArticleTask(url);
-                const taskId = submitResult.task_id;
-                this.logger.log(`任务已提交，ID: ${taskId}`, 'success');
+                const result = await this.apiClient.downloadArticle(url);
 
-                // 2. 轮询任务状态
-                const result = await this.pollTaskStatus(taskId);
-
-                // 3. 获取并显示结果
-                this.logger.log('获取解锁内容...', 'info');
-                const resultData = await this.apiClient.getTaskResult(taskId);
-
-                if (resultData.success && resultData.content) {
-                    this.logger.log(`解锁成功: ${resultData.title || '未知标题'}`, 'success');
-                    this.resultPanel.show(resultData.content, resultData.title);
+                if (result.success && result.content) {
+                    this.logger.log(`解锁成功: ${result.title || '未知标题'}`, 'success');
+                    this.logger.log(`文件大小: ${(result.file_size / 1024).toFixed(2)} KB`, 'info');
+                    this.resultPanel.show(result.content, result.title);
                     return true;
                 } else {
-                    throw new Error(resultData.error || '获取内容失败');
+                    throw new Error(result.error || '下载失败');
                 }
             } catch (error) {
                 this.logger.log(`解锁失败: ${error.message}`, 'error');
                 throw error;
             }
-        }
-
-        async pollTaskStatus(taskId) {
-            const startTime = Date.now();
-            let lastProgress = 0;
-
-            while (Date.now() - startTime < CONFIG.pollTimeoutMs) {
-                try {
-                    const status = await this.apiClient.getTaskStatus(taskId);
-
-                    // 显示进度
-                    if (status.progress && status.progress !== lastProgress) {
-                        this.logger.log(`处理进度: ${status.progress}%`, 'info');
-                        lastProgress = status.progress;
-                    }
-
-                    if (status.status === 'SUCCESS') {
-                        return status.result;
-                    } else if (status.status === 'FAILURE') {
-                        throw new Error(status.error || '任务执行失败');
-                    } else if (status.status === 'PROCESSING') {
-                        this.logger.log('任务处理中...', 'info');
-                    }
-
-                    // 等待后继续轮询
-                    await new Promise(resolve => setTimeout(resolve, CONFIG.pollIntervalMs));
-                } catch (error) {
-                    if (error.message.includes('任务执行失败')) {
-                        throw error;
-                    }
-                    // 其他错误继续轮询
-                    await new Promise(resolve => setTimeout(resolve, CONFIG.pollIntervalMs));
-                }
-            }
-
-            throw new Error('任务处理超时，请稍后重试');
         }
 
         async getDownloadLink(url) {
@@ -642,7 +360,6 @@
         }
     }
 
-    // ========== UI注入 ==========
     class UIInjector {
         constructor(controller) {
             this.controller = controller;
@@ -651,7 +368,6 @@
         injectArticleButton() {
             const url = window.location.href;
 
-            // 检测VIP元素
             const vipSelectors = [
                 'a.article-vip-box[href="https://mall.csdn.net/vip"]',
                 '#vip-info-wrap.vip-info-wrap',
@@ -669,7 +385,6 @@
                 return;
             }
 
-            // 创建解锁按钮
             const button = document.createElement('button');
             button.textContent = '🔓 一键解锁';
             button.style.cssText = `
@@ -721,12 +436,10 @@
                 }
             };
 
-            // 插入按钮
             this.insertButton(button, vipElement);
         }
 
         insertButton(button, vipElement) {
-            // 尝试多种插入位置
             const barContent = document.querySelector('.article-bar-top .bar-content');
             if (barContent) {
                 barContent.appendChild(button);
@@ -739,7 +452,6 @@
                 return;
             }
 
-            // 兜底方案
             if (vipElement.parentElement) {
                 vipElement.parentElement.insertBefore(button, vipElement.nextSibling);
             } else {
@@ -748,11 +460,93 @@
         }
 
         injectDownloadButton() {
-            // 为CSDN下载页面注入获取直链按钮
-            const downloadBtn = document.querySelector('.download-btn, .dl_download_box a');
-            if (!downloadBtn) return;
+            if (document.getElementById('csdn-unlock-download-btn')) return;
+
+            const downloadBtnContainer = document.querySelector('#downloadBtn');
+
+            if (!downloadBtnContainer) {
+                console.log('[CSDN Helper] 未找到 #downloadBtn，尝试其他选择器...');
+                const selectors = [
+                    '.download-btn',
+                    '.dl_download_box',
+                    '#download',
+                    '.resource_download',
+                    '.dl_download_link',
+                    'main',
+                    'body'
+                ];
+
+                let targetElement = null;
+                for (const selector of selectors) {
+                    targetElement = document.querySelector(selector);
+                    if (targetElement) break;
+                }
+
+                if (!targetElement) {
+                    console.log('[CSDN Helper] 未找到合适的插入位置，将创建固定按钮');
+                    this.createFixedDownloadButton();
+                    return;
+                }
+
+                this.createStandaloneButton(targetElement);
+                return;
+            }
 
             const button = document.createElement('button');
+            button.id = 'csdn-unlock-download-btn';
+            button.type = 'button';
+            button.className = 'el-button relative el-button--success el-button--medium';
+            button.style.cssText = `
+                margin-left: 12px !important;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+                border-color: #667eea !important;
+                transition: all 0.3s ease !important;
+            `;
+
+            const span = document.createElement('span');
+            span.textContent = '🔗 获取直链';
+            button.appendChild(span);
+
+            button.onmouseover = () => {
+                button.style.transform = 'translateY(-2px)';
+                button.style.boxShadow = '0 4px 12px rgba(102, 126, 234, 0.6)';
+            };
+            button.onmouseout = () => {
+                button.style.transform = 'translateY(0)';
+                button.style.boxShadow = '0 2px 8px rgba(102, 126, 234, 0.4)';
+            };
+
+            button.onclick = async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+
+                const url = window.location.href;
+                const originalText = span.textContent;
+                span.textContent = '⏳ 获取中...';
+                button.disabled = true;
+
+                try {
+                    const downloadUrl = await this.controller.getDownloadLink(url);
+                    window.open(downloadUrl, '_blank');
+                    span.textContent = '✅ 已打开';
+                } catch (error) {
+                    alert(`获取失败：${error.message}`);
+                    span.textContent = originalText;
+                } finally {
+                    setTimeout(() => {
+                        span.textContent = originalText;
+                        button.disabled = false;
+                    }, 2000);
+                }
+            };
+
+            downloadBtnContainer.appendChild(button);
+            console.log('[CSDN Helper] 下载按钮已注入到 #downloadBtn');
+        }
+
+        createStandaloneButton(targetElement) {
+            const button = document.createElement('button');
+            button.id = 'csdn-unlock-download-btn';
             button.textContent = '🔗 获取直链';
             button.style.cssText = `
                 padding: 10px 24px !important;
@@ -763,9 +557,19 @@
                 cursor: pointer !important;
                 font-size: 14px !important;
                 font-weight: 500 !important;
-                margin-left: 15px !important;
+                margin: 10px !important;
                 box-shadow: 0 2px 8px rgba(102, 126, 234, 0.4) !important;
+                transition: all 0.3s ease !important;
             `;
+
+            button.onmouseover = () => {
+                button.style.transform = 'translateY(-2px)';
+                button.style.boxShadow = '0 4px 12px rgba(102, 126, 234, 0.6)';
+            };
+            button.onmouseout = () => {
+                button.style.transform = 'translateY(0)';
+                button.style.boxShadow = '0 2px 8px rgba(102, 126, 234, 0.4)';
+            };
 
             button.onclick = async () => {
                 const url = window.location.href;
@@ -788,34 +592,96 @@
                 }
             };
 
-            downloadBtn.parentElement.appendChild(button);
+            if (targetElement.tagName === 'BODY' || targetElement.tagName === 'MAIN') {
+                targetElement.insertBefore(button, targetElement.firstChild);
+            } else {
+                targetElement.parentElement.insertBefore(button, targetElement.nextSibling);
+            }
+
+            console.log('[CSDN Helper] 独立下载按钮已注入');
+        }
+
+        createFixedDownloadButton() {
+            const button = document.createElement('button');
+            button.id = 'csdn-unlock-download-btn';
+            button.textContent = '🔗 获取直链';
+            button.style.cssText = `
+                position: fixed !important;
+                top: 100px !important;
+                right: 20px !important;
+                padding: 12px 24px !important;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+                color: #fff !important;
+                border: none !important;
+                border-radius: 8px !important;
+                cursor: pointer !important;
+                font-size: 14px !important;
+                font-weight: 600 !important;
+                box-shadow: 0 4px 12px rgba(102, 126, 234, 0.5) !important;
+                z-index: 2147483646 !important;
+                transition: all 0.3s ease !important;
+            `;
+
+            button.onmouseover = () => {
+                button.style.transform = 'translateY(-2px) scale(1.05)';
+                button.style.boxShadow = '0 6px 16px rgba(102, 126, 234, 0.7)';
+            };
+            button.onmouseout = () => {
+                button.style.transform = 'translateY(0) scale(1)';
+                button.style.boxShadow = '0 4px 12px rgba(102, 126, 234, 0.5)';
+            };
+
+            button.onclick = async () => {
+                const url = window.location.href;
+                const originalText = button.textContent;
+                button.textContent = '⏳ 获取中...';
+                button.disabled = true;
+
+                try {
+                    const downloadUrl = await this.controller.getDownloadLink(url);
+                    window.open(downloadUrl, '_blank');
+                    button.textContent = '✅ 已打开';
+                } catch (error) {
+                    alert(`获取失败：${error.message}`);
+                    button.textContent = originalText;
+                } finally {
+                    setTimeout(() => {
+                        button.textContent = originalText;
+                        button.disabled = false;
+                    }, 2000);
+                }
+            };
+
+            document.body.appendChild(button);
+            console.log('[CSDN Helper] 固定下载按钮已创建');
         }
     }
 
-    // ========== 初始化 ==========
     function init() {
-        // 检查API密钥
-        if (!CONFIG.apiKey) {
-            console.warn('[CSDN Helper] 未配置API密钥，显示配置对话框');
-
-            // 显示密钥配置对话框
-            const dialog = new ApiKeyDialog();
-            dialog.show();
-            return;
-        }
+        console.log('[CSDN Helper] 初始化中...');
 
         const controller = new UnlockController();
         const injector = new UIInjector(controller);
 
         const hostname = window.location.hostname;
-        if (hostname.includes('blog.csdn.net') || hostname.includes('wenku.csdn.net')) {
-            injector.injectArticleButton();
-        } else if (hostname.includes('download.csdn.net')) {
-            injector.injectDownloadButton();
+
+        function tryInject(retryCount = 0) {
+            if (hostname.includes('blog.csdn.net') || hostname.includes('wenku.csdn.net')) {
+                injector.injectArticleButton();
+            } else if (hostname.includes('download.csdn.net')) {
+                injector.injectDownloadButton();
+
+                if (!document.getElementById('csdn-unlock-download-btn') && retryCount < 5) {
+                    console.log(`[CSDN Helper] 按钮注入失败，${500}ms 后重试 (${retryCount + 1}/5)`);
+                    setTimeout(() => tryInject(retryCount + 1), 500);
+                }
+            }
         }
+
+        tryInject();
+        console.log('[CSDN Helper] 初始化完成');
     }
 
-    // 等待页面加载完成
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', init);
     } else {
