@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  unlock-vip:
+    build: .
+    container_name: unlock-vip
+    ports:
+      - "8001:8001"
+    volumes:
+      # 挂载 cookies.json（必需）
+      - ./cookies.json:/app/cookies.json:ro
+      # 挂载 .env 文件（可选）
+      - ./.env:/app/.env:ro
+      # 挂载下载目录（可选，用于持久化下载的文件）
+      - ./downloads:/app/downloads
+    environment:
+      - PORT=8001
+      - THREAD_POOL_WORKERS=4
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - unlock-vip-network
+
+networks:
+  unlock-vip-network:
+    driver: bridge
